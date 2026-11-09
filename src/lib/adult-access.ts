@@ -9,9 +9,23 @@
 
 import { db } from '@/lib/db';
 
-/** 本站 6 个 AV 源的 key 都是 av_ 开头 */
+/** 本站 6 个 AV 源的 key 都是 av_ 开头；成人直播源的 key 也是 av_live */
 export function isAdultApiSiteKey(key: string): boolean {
   return key.toLowerCase().startsWith('av_');
+}
+
+/**
+ * 播放记录 / 收藏的 key 是 `源key+id`。直播记录的源 key 会再加 live_ 前缀，
+ * 例如成人直播台的记录 key 是 `live_av_live+live_av_live-0`，
+ * 所以要把 live_av_ 也认出来。
+ */
+export function isAdultRecordKey(key: string): boolean {
+  const source = key.split('+')[0].toLowerCase();
+  if (isAdultApiSiteKey(source)) return true;
+  if (source.startsWith('live_')) {
+    return isAdultApiSiteKey(source.slice('live_'.length));
+  }
+  return false;
 }
 
 export async function canViewAdult(

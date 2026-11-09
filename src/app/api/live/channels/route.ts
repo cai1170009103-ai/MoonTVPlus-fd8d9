@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getCachedLiveChannels } from '@/lib/live';
+import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
 import { requireFeaturePermission } from '@/lib/permissions';
 
 export const runtime = 'nodejs';
@@ -14,6 +15,14 @@ export async function GET(request: NextRequest) {
 
     if (!sourceKey) {
       return NextResponse.json({ error: '缺少直播源参数' }, { status: 400 });
+    }
+
+    // 无成人权限的用户查不到成人直播源的频道
+    if (
+      isAdultApiSiteKey(sourceKey) &&
+      !(await canViewAdult(authResult.username))
+    ) {
+      return NextResponse.json({ error: '频道信息未找到' }, { status: 404 });
     }
 
     const channelData = await getCachedLiveChannels(sourceKey);

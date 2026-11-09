@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
+import { canViewAdult, isAdultRecordKey } from '@/lib/adult-access';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     // 权限开通后记录会重新出现）
     if (!(await canViewAdult(authInfo.username))) {
       for (const key of Object.keys(records)) {
-        if (isAdultApiSiteKey(key.split('+')[0])) {
+        if (isAdultRecordKey(key)) {
           delete (records as Record<string, unknown>)[key];
         }
       }

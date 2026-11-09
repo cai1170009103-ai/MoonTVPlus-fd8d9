@@ -714,6 +714,97 @@ const avOnly = list.filter((item) => isAvResult(item));
 return { deduped: dedupeResults(avOnly), rawCount: avOnly.length};
 }
 
+// 成人直播 · 轮播台：13 个轮播台，点台名进 /live 播放。
+// 数据走 /api/live/channels?source=av_live（服务端已按成人权限拦截，
+// 无权限的用户拿不到频道，整行直接不显示）。DB 里还没配 av_live 源时
+// 接口会 404，同样不显示，不影响女优区。
+const ADULT_LIVE_SOURCE_KEY = 'av_live';
+
+type AdultLiveChannel = {
+  id: string;
+  name: string;
+  logo: string;
+  group: string;
+  url: string;
+};
+
+function AdultLiveRow() {
+  const [channels, setChannels] = useState<AdultLiveChannel[] | null>(null);
+  const [logoFailed, setLogoFailed] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/live/channels?source=${ADULT_LIVE_SOURCE_KEY}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const list: AdultLiveChannel[] = Array.isArray(data.data)
+          ? data.data
+          : [];
+        if (!cancelled && list.length > 0) setChannels(list);
+      } catch {
+        // 源未配置或网络失败：整行隐藏，不影响女优区
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!channels || channels.length === 0) return null;
+
+  return (
+    <>
+      <div className='mb-1 flex items-center gap-2'>
+        <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>
+          成人直播 · 轮播台
+        </span>
+        <span className='text-xs text-gray-400 dark:text-gray-500'>
+          24 小时轮播，点台名直接看
+        </span>
+      </div>
+      <div className='mb-5 flex gap-3 overflow-x-auto pb-1'>
+        {channels.map((ch) => {
+          const showLogo = ch.logo && !logoFailed[ch.id];
+          return (
+            <a
+              key={ch.id}
+              href={`/live?source=${ADULT_LIVE_SOURCE_KEY}&id=${encodeURIComponent(ch.id)}`}
+              className='relative flex w-20 shrink-0 flex-col items-center gap-1'
+            >
+              {showLogo ? (
+                <img
+                  src={`/api/proxy/logo?url=${encodeURIComponent(ch.logo)}&source=${ADULT_LIVE_SOURCE_KEY}`}
+                  alt={ch.name}
+                  loading='lazy'
+                  referrerPolicy='no-referrer'
+                  onError={() =>
+                    setLogoFailed((prev) => ({ ...prev, [ch.id]: true }))
+                  }
+                  className='h-14 w-14 rounded-full object-cover ring-1 ring-gray-200 dark:ring-gray-700'
+                />
+              ) : (
+                <span className='flex h-14 w-14 items-center justify-center rounded-full bg-gray-200 text-xl font-bold text-gray-500 dark:bg-gray-700 dark:text-gray-300'>
+                  {ch.name.charAt(0)}
+                </span>
+              )}
+              <span className='absolute right-1 top-0 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white'>
+                LIVE
+              </span>
+              <span className='max-w-full truncate text-xs text-gray-700 dark:text-gray-200'>
+                {ch.name}
+              </span>
+            </a>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 export default function AvPageClient() {
 const [keyword, setKeyword] = useState(DEFAULT_ACTRESS);
 const [inputValue, setInputValue] = useState(DEFAULT_ACTRESS);
@@ -923,6 +1014,9 @@ onSelect={handleSelectActress}
 />
 ))}
 </div>
+
+{/* 成人直播 · 轮播台：横滑一行，在精选下方、罩杯筛选上方，不进罩杯过滤 */}
+<AdultLiveRow />
 
 {/* 罩杯筛选 */}
 <div className='mb-1 flex items-center gap-2'>

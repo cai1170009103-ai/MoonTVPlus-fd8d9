@@ -3,7 +3,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
-import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
+import {
+  canViewAdult,
+  isAdultApiSiteKey,
+  isAdultRecordKey,
+} from '@/lib/adult-access';
 import { db } from '@/lib/db';
 import { Favorite } from '@/lib/types';
 
@@ -77,7 +81,7 @@ export async function GET(request: NextRequest) {
     // 无成人权限：收藏列表里不出现 AV（只过滤返回结果，不删除数据）
     if (!(await canViewAdult(authInfo.username))) {
       for (const key of Object.keys(favorites)) {
-        if (isAdultApiSiteKey(key.split('+')[0])) {
+        if (isAdultRecordKey(key)) {
           delete (favorites as Record<string, unknown>)[key];
         }
       }

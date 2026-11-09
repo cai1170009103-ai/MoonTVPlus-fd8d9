@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getConfig } from '@/lib/config';
+import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
 import { fetchLive, toWebStream } from '@/lib/live-http';
 import { requireFeaturePermission } from '@/lib/permissions';
 
@@ -21,6 +22,13 @@ export async function GET(request: NextRequest) {
   const config = await getConfig();
   const liveSource = config.LiveConfig?.find((s: any) => s.key === source);
   if (!liveSource) {
+    return NextResponse.json({ error: 'Source not found' }, { status: 404 });
+  }
+  // 无成人权限的用户不能预检成人直播源
+  if (
+    isAdultApiSiteKey(source || '') &&
+    !(await canViewAdult(authResult.username))
+  ) {
     return NextResponse.json({ error: 'Source not found' }, { status: 404 });
   }
   const ua = liveSource.ua || 'AptvPlayer/1.4.10';
