@@ -563,8 +563,12 @@ export function tryApplyBangumiImageFallback(
 
 /**
  * 处理图片 URL，根据用户设置使用相应的代理
+ * @param width 需要时把图片按宽度裁剪（卡片海报传 360 即可，2 倍屏也够用）
  */
-export function processImageUrl(originalUrl: string): string {
+export function processImageUrl(
+  originalUrl: string,
+  opts?: { width?: number }
+): string {
   if (!originalUrl) return originalUrl;
 
   // 如果已经是代理URL，直接返回
@@ -615,7 +619,21 @@ export function processImageUrl(originalUrl: string): string {
 
   // 处理豆瓣图片代理
   if (!originalUrl.includes('doubanio.com')) {
-    return originalUrl;
+    // 其余外链图片（主要是 CMS 片源海报）：走本站图片代理。
+    // 好处：源站图床在国内打不开/防盗链时可由服务端代取，且代理响应带半年
+    // CDN 缓存头，同一张图只回源一次，不会把图片流量都算到函数上。
+    // 相对路径、data:/blob: 等本站图片原样返回。
+    if (!/^https?:\/\//i.test(originalUrl)) {
+      return originalUrl;
+    }
+    const width =
+      opts?.width && Number.isFinite(opts.width)
+        ? Math.max(1, Math.min(720, Math.floor(opts.width)))
+        : undefined;
+    return (
+      `/api/image-proxy?url=${encodeURIComponent(originalUrl)}&source=cms` +
+      (width ? `&w=${width}` : '')
+    );
   }
 
   const { proxyType, proxyUrl } = getDoubanImageProxyConfig();

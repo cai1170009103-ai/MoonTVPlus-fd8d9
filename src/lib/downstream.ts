@@ -155,14 +155,21 @@ export async function searchFromApi(
     const pageCountFromFirst = firstPageResult.pageCount;
 
     const config = await getConfig();
-    const MAX_SEARCH_PAGES: number = config.SiteConfig.SearchDownstreamMaxPage;
+    // 搜索最多拉 2 页：首屏几乎没人翻到第 3 页以后，拉深页只会拖慢整次搜索。
+    // 即使数据库里存的旧配置还是 5，这里也按 2 封顶，无需改库。
+    const MAX_SEARCH_PAGES: number = Math.min(
+      config.SiteConfig.SearchDownstreamMaxPage || 2,
+      2
+    );
 
     // 获取总页数
     const pageCount = pageCountFromFirst || 1;
     // 确定需要获取的额外页数
     const pagesToFetch = Math.min(pageCount - 1, MAX_SEARCH_PAGES - 1);
 
-    // 如果有额外页数，获取更多页的结果
+    // 如果有额外页数，获取更多页的结果。
+    // 第 2 页不阻塞返回：第 1 页结果已拿到手，第 2 页只等最多 1.5 秒，
+    // 超时就直接返回第 1 页的结果，不让慢源拖住整次搜索。
     if (pagesToFetch > 0) {
       const additionalPagePromises = [];
 
@@ -182,8 +189,13 @@ export async function searchFromApi(
         additionalPagePromises.push(pagePromise);
       }
 
-      // 等待所有额外页的结果
-      const additionalResults = await Promise.all(additionalPagePromises);
+      // 等待所有额外页的结果（最多等 1.5 秒，超时只返回第 1 页）
+      const additionalResults = await Promise.race([
+        Promise.all(additionalPagePromises),
+        new Promise<SearchResult[][]>((resolve) =>
+          setTimeout(() => resolve([]), 1500)
+        ),
+      ]);
 
       // 合并所有页的结果
       additionalResults.forEach((pageResults) => {

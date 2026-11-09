@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     hasFeaturePermission(authInfo.username, 'emby'),
   ]);
   // 特殊源入口（/under）只搜影视源：私人影库（OpenList/Emby）不参与搜索。
-  // 否则 0 个特殊源时也会去搜私人影库，既串味又要白等 20s 超时。
+  // 否则 0 个特殊源时也会去搜私人影库，既串味又要白等 10s 超时。
   const canAccessOpenList = hasOpenListPermission && !specialOnly;
   const canAccessEmby = hasEmbyPermission && !specialOnly;
 
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
         }
       })(),
       new Promise<any[]>((_, reject) =>
-        setTimeout(() => reject(new Error(`${embyConfig.name} timeout`)), 20000)
+        setTimeout(() => reject(new Error(`${embyConfig.name} timeout`)), 10000)
       ),
     ]).catch((error) => {
       console.error(`[Search] 搜索 ${embyConfig.name} 超时:`, error);
@@ -177,7 +177,7 @@ export async function GET(request: NextRequest) {
           }
         })(),
         new Promise<any[]>((_, reject) =>
-          setTimeout(() => reject(new Error('OpenList timeout')), 20000)
+          setTimeout(() => reject(new Error('OpenList timeout')), 10000)
         ),
       ]).catch((error) => {
         console.error('[Search] 搜索 OpenList 超时:', error);
@@ -190,7 +190,7 @@ export async function GET(request: NextRequest) {
     Promise.race([
       searchFromApi(site, query),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`${site.name} timeout`)), 20000)
+        setTimeout(() => reject(new Error(`${site.name} timeout`)), 10000)
       ),
     ]).catch((err) => {
       console.warn(`搜索失败 ${site.name}:`, err.message);
@@ -239,7 +239,7 @@ export async function GET(request: NextRequest) {
         }
       })(),
       new Promise<any[]>((_, reject) =>
-        setTimeout(() => reject(new Error(`${script.name} timeout`)), 20000)
+        setTimeout(() => reject(new Error(`${script.name} timeout`)), 10000)
       ),
     ]).catch((error) => {
       console.error(`[Search] 搜索脚本 ${script.name} 超时:`, error);

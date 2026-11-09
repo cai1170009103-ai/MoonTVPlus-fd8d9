@@ -311,6 +311,7 @@ export const UserMenu: React.FC = () => {
   type HomeBannerHeightScale = '1' | '1.5' | '2';
 
   const defaultHomeModules: HomeModule[] = [
+    { id: 'cmsLatest', name: '最新收录', enabled: true, order: -1 },
     { id: 'hotMovies', name: '热门电影', enabled: true, order: 0 },
     { id: 'hotDuanju', name: '热播短剧', enabled: true, order: 1 },
     { id: 'bangumiCalendar', name: '新番放送', enabled: true, order: 2 },
@@ -879,7 +880,17 @@ export const UserMenu: React.FC = () => {
       const savedHomeModules = localStorage.getItem('homeModules');
       if (savedHomeModules !== null) {
         try {
-          setHomeModules(JSON.parse(savedHomeModules));
+          const parsed: HomeModule[] = JSON.parse(savedHomeModules);
+          // 老的本地配置里没有最新收录模块，补上
+          if (!parsed.some((m) => m.id === 'cmsLatest')) {
+            parsed.unshift({
+              id: 'cmsLatest',
+              name: '最新收录',
+              enabled: true,
+              order: -1,
+            });
+          }
+          setHomeModules(parsed);
         } catch (error) {
           console.error('解析首页模块配置失败:', error);
         }

@@ -183,7 +183,8 @@ const VideoCard = forwardRef<VideoCardHandle, VideoCardProps>(
     const processedPoster = useMemo(
       () =>
         actualPoster
-          ? processImageUrl(actualPoster)
+          ? // 卡片海报按 360px 宽裁剪：手机 2 倍屏也够清晰，流量只有原图零头
+            processImageUrl(actualPoster, { width: 360 })
           : isNetdiskSource(source)
           ? netdiskPosterPlaceholder
           : '',

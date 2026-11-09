@@ -2038,6 +2038,17 @@ function PlayPageClient() {
   // Xiaoya链接刷新相关状态
   const [isRefreshingUrl, setIsRefreshingUrl] = useState(false); // 是否正在刷新链接
   const retryCountRef = useRef(0); // 重试计数
+  // 播放失败自动换源：同一源连续失败 2 次才切源，避免单次网络抖动误切；
+  // tried 记录本片已试过的源，防止来回横跳
+  const autoSwitchFailRef = useRef<{ key: string; count: number }>({
+    key: '',
+    count: 0,
+  });
+  const autoSwitchTriedRef = useRef<{ title: string; keys: Set<string> }>({
+    title: '',
+    keys: new Set(),
+  });
+  const availableSourcesRef = useRef<SearchResult[]>([]);
   const lastRefreshTimeRef = useRef(0); // 上次刷新时间
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null); // 14分钟定时器
   const currentXiaoyaUrlRef = useRef<string>(''); // 当前xiaoya原始URL（用于刷新）
@@ -5963,6 +5974,8 @@ function PlayPageClient() {
     newTitle: string
   ) => {
     try {
+      // 手动/自动换源都先清掉失败计数，新源从 0 开始算
+      autoSwitchFailRef.current = { key: '', count: 0 };
       // 标记正在换源，防止 title 变化触发页面刷新
       isSourceChangingRef.current = true;
 
@@ -6151,6 +6164,68 @@ function PlayPageClient() {
       setIsVideoLoading(false);
       setError(err instanceof Error ? err.message : '换源失败');
     }
+  };
+
+  // 同步 availableSources 到 ref，供 HLS/原生 video 错误回调里自动换源使用
+  // （错误回调闭包里读不到最新的 state）
+  useEffect(() => {
+    availableSourcesRef.current = availableSources;
+  }, [availableSources]);
+
+  /**
+   * 播放失败自动换源：同一源连续失败满 2 次后，自动切到同名影片的下一个
+   * 未试过的源（复用手动换源逻辑，集数对齐、进度恢复都在里面）。
+   * 返回 true 表示已发起换源，false 表示没有可切的源。
+   */
+  const tryAutoSwitchSourceOnFailure = (): boolean => {
+    const title = (detailRef.current?.title || videoTitle || '').trim();
+    if (!title) return false;
+    const currentKey = `${currentSourceRef.current}:${currentIdRef.current}`;
+    if (autoSwitchTriedRef.current.title !== title) {
+      autoSwitchTriedRef.current = {
+        title,
+        keys: new Set([currentKey]),
+      };
+    }
+    const prev = autoSwitchFailRef.current;
+    const count = prev.key === currentKey ? prev.count + 1 : 1;
+    autoSwitchFailRef.current = { key: currentKey, count };
+    // 连续失败未满 2 次：先只报错，让用户点重试，不自动切源
+    if (count < 2) return false;
+
+    const normalize = (s: string) =>
+      s.toLowerCase().replace(/[\s\-_·•【】\[\]()（）:：!！?？.,，]+/g, '');
+    const candidate = availableSourcesRef.current.find((s) => {
+      if (!s.title || normalize(s.title) !== normalize(title)) return false;
+      const key = `${s.source}:${s.id}`;
+      if (key === currentKey) return false;
+      if (autoSwitchTriedRef.current.keys.has(key)) return false;
+      // 懒详情源没有预置集数，换过去时会现取详情，也算可用
+      if (s.episodes && s.episodes.length > 0) return true;
+      return isLazyDetailSource(s.source);
+    });
+    if (!candidate) return false;
+
+    autoSwitchTriedRef.current.keys.add(
+      `${candidate.source}:${candidate.id}`
+    );
+    autoSwitchFailRef.current = { key: '', count: 0 };
+    const targetName = candidate.source_name || candidate.source;
+    console.log(`[自动换源] 当前源连续失败 2 次，切换至 ${targetName} 源`);
+    if (artPlayerRef.current) {
+      artPlayerRef.current.notice.show = `当前源播放失败，已自动切换至 ${targetName} 源`;
+    }
+    void handleSourceChange(candidate.source, candidate.id, candidate.title);
+    return true;
+  };
+
+  /**
+   * 致命播放错误的统一入口：先显示错误，再尝试自动换源。
+   * 换源成功后 handleSourceChange 会清掉错误并显示换源加载态。
+   */
+  const reportFatalPlaybackError = (message: string) => {
+    setVideoError(message);
+    tryAutoSwitchSourceOnFailure();
   };
 
   useEffect(() => {
@@ -7872,20 +7947,20 @@ function PlayPageClient() {
                         // 原有的错误处理逻辑
                         hls.destroy();
                         if (statusCode === 403) {
-                          setVideoError('访问被拒绝 (403)');
+                          reportFatalPlaybackError('访问被拒绝 (403)');
                         } else if (statusCode === 404) {
-                          setVideoError('视频不存在 (404)');
+                          reportFatalPlaybackError('视频不存在 (404)');
                         } else if (statusCode === 415) {
-                          setVideoError('视频格式不兼容 (415)');
+                          reportFatalPlaybackError('视频格式不兼容 (415)');
                         } else if (statusCode) {
-                          setVideoError(`HTTP ${statusCode} 错误`);
+                          reportFatalPlaybackError(`HTTP ${statusCode} 错误`);
                         } else {
                           // CORS 错误或其他网络错误
                           // 如果是直链直连模式（URL 不含代理前缀），记录原始 URL 以便用户一键启用代理
                           if (currentSourceRef.current === 'directplay' && !url.includes('/api/proxy-m3u8') && !url.includes('/api/proxy/vod/m3u8')) {
                             setCorsFailedUrl(url);
                           }
-                          setVideoError('无法访问视频源（可能是跨域限制或访问被拒绝）');
+                          reportFatalPlaybackError('无法访问视频源（可能是跨域限制或访问被拒绝）');
                         }
                         return;
                       }
@@ -7895,7 +7970,7 @@ function PlayPageClient() {
                         if (statusCode && statusCode >= 400) {
                           console.log(`HTTP ${statusCode} 错误`);
                           hls.destroy();
-                          setVideoError(`HTTP ${statusCode} 错误`);
+                          reportFatalPlaybackError(`HTTP ${statusCode} 错误`);
                           return;
                         }
                       }
@@ -7909,7 +7984,7 @@ function PlayPageClient() {
                     default:
                       console.log('无法恢复的错误');
                       hls.destroy();
-                      setVideoError('视频加载错误');
+                      reportFatalPlaybackError('视频加载错误');
                       break;
                   }
                 }
@@ -9872,6 +9947,8 @@ function PlayPageClient() {
 
         // 监听视频播放事件，检查是否需要显示播放记录跳转按钮
         artPlayerRef.current.on('video:playing', () => {
+          // 能正常播放说明当前源是好的，清掉失败计数
+          autoSwitchFailRef.current = { key: '', count: 0 };
           // 检查是否需要显示播放记录跳转按钮
           // 条件：当前播放时间 < 10秒 且 播放记录时间 > 10秒
           const checkPlayRecordJump = async () => {
@@ -10160,12 +10237,12 @@ function PlayPageClient() {
             // 非 HLS 场景下的原生视频错误，显示错误 UI
             if (proxyAttemptedRef.current) {
               // 代理已经尝试过（走了 415→直连 的路径），直连也失败了，不再提供代理按钮
-              setVideoError('视频无法在浏览器中播放（已尝试代理，格式不兼容）');
+              reportFatalPlaybackError('视频无法在浏览器中播放（已尝试代理，格式不兼容）');
             } else if (currentSourceRef.current === 'directplay' && !currentUrl.includes('/api/proxy-m3u8')) {
               setCorsFailedUrl(currentUrl);
-              setVideoError('视频播放失败');
+              reportFatalPlaybackError('视频播放失败');
             } else {
-              setVideoError('视频播放失败');
+              reportFatalPlaybackError('视频播放失败');
             }
           }
         });

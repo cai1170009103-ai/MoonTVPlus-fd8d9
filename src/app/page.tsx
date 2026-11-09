@@ -52,10 +52,14 @@ function HomeClient() {
   const [bangumiCalendarData, setBangumiCalendarData] = useState<
     BangumiCalendarData[]
   >([]);
+  // 片源站最新收录：首屏先出内容，不等豆瓣
+  const [cmsLatest, setCmsLatest] = useState<any[]>([]);
+  const [cmsLatestLoading, setCmsLatestLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const { announcement, announcementDisplayMode } = useSite();
   // 首页模块配置状态
   const [homeModules, setHomeModules] = useState<HomeModule[]>([
+    { id: 'cmsLatest', name: '最新收录', enabled: true, order: -1 },
     { id: 'hotMovies', name: '热门电影', enabled: true, order: 0 },
     { id: 'hotDuanju', name: '热播短剧', enabled: true, order: 1 },
     { id: 'bangumiCalendar', name: '新番放送', enabled: true, order: 2 },
@@ -259,7 +263,17 @@ function HomeClient() {
     const savedHomeModules = localStorage.getItem('homeModules');
     if (savedHomeModules) {
       try {
-        setHomeModules(JSON.parse(savedHomeModules));
+        const parsed: HomeModule[] = JSON.parse(savedHomeModules);
+        // 老的本地配置里没有最新收录模块，补上（放最前面），否则新模块永远不显示
+        if (!parsed.some((m) => m.id === 'cmsLatest')) {
+          parsed.unshift({
+            id: 'cmsLatest',
+            name: '最新收录',
+            enabled: true,
+            order: -1,
+          });
+        }
+        setHomeModules(parsed);
       } catch (error) {
         console.error('解析首页模块配置失败:', error);
       }
@@ -445,117 +459,167 @@ function HomeClient() {
       !upcomingCache ||
       upcomingCache.expired;
 
-    if (needsRefresh) {
+    // 首屏先拉片源站最新收录（直接取本站片源的最新更新，不经过豆瓣），
+    // 1~2 秒就有真实海报；豆瓣那几组放后面懒加载，不再堵首屏。
+    const cmsLatestCache = getCache('homepage_cmsLatest');
+    if (cmsLatestCache?.data) {
+      setCmsLatest(cmsLatestCache.data);
+      setCmsLatestLoading(false);
+    }
+    if (!cmsLatestCache || cmsLatestCache.expired) {
       (async () => {
         try {
-          const [
-            moviesData,
-            tvShowsData,
-            varietyShowsData,
-            bangumiCalendarData,
-          ] = await Promise.all([
-            getDoubanCategories({
-              kind: 'movie',
-              category: '热门',
-              type: '全部',
-            }).catch((error) => {
-              console.error('获取热门电影数据失败:', error);
-              return null;
-            }),
-            getDoubanCategories({
-              kind: 'tv',
-              category: 'tv',
-              type: 'tv',
-            }).catch((error) => {
-              console.error('获取热门剧集数据失败:', error);
-              return null;
-            }),
-            getDoubanCategories({
-              kind: 'tv',
-              category: 'show',
-              type: 'show',
-            }).catch((error) => {
-              console.error('获取热门综艺数据失败:', error);
-              return null;
-            }),
-            GetBangumiCalendarData().catch((error) => {
-              console.error('获取新番放送数据失败:', error);
-              return [];
-            }),
-          ]);
-
-          if (moviesData?.code === 200) {
-            setHotMovies(moviesData.list);
-            if (moviesData.list && moviesData.list.length > 0) {
-              setCache('homepage_movies', moviesData.list);
+          const response = await fetch('/api/home-cms');
+          if (response.ok) {
+            const result = await response.json();
+            if (result.results && result.results.length > 0) {
+              setCmsLatest(result.results);
+              setCache('homepage_cmsLatest', result.results);
             }
           }
-          if (tvShowsData?.code === 200) {
-            setHotTvShows(tvShowsData.list);
-            if (tvShowsData.list && tvShowsData.list.length > 0) {
-              setCache('homepage_tvshows', tvShowsData.list);
-            }
-          }
-          if (varietyShowsData?.code === 200) {
-            setHotVarietyShows(varietyShowsData.list);
-            if (varietyShowsData.list && varietyShowsData.list.length > 0) {
-              setCache('homepage_variety', varietyShowsData.list);
-            }
-          }
-          setBangumiCalendarData(bangumiCalendarData);
-          if (bangumiCalendarData && bangumiCalendarData.length > 0) {
-            setCache('homepage_bangumi', bangumiCalendarData);
-          }
-
-          try {
-            const duanjuResponse = await fetch('/api/duanju/recommends');
-            if (duanjuResponse.ok) {
-              const duanjuResult = await duanjuResponse.json();
-              if (
-                duanjuResult.code === 200 &&
-                duanjuResult.data &&
-                duanjuResult.data.length > 0
-              ) {
-                setHotDuanju(duanjuResult.data);
-                setCache('homepage_duanju', duanjuResult.data);
-              }
-            }
-          } catch (error) {
-            console.error('获取热播短剧数据失败:', error);
-          }
-
-          try {
-            const response = await fetch('/api/tmdb/upcoming');
-            if (response.ok) {
-              const result = await response.json();
-              if (
-                result.code === 200 &&
-                result.data &&
-                result.data.length > 0
-              ) {
-                const sorted = [...result.data].sort((a, b) => {
-                  const dateA = new Date(
-                    a.release_date || '9999-12-31'
-                  ).getTime();
-                  const dateB = new Date(
-                    b.release_date || '9999-12-31'
-                  ).getTime();
-                  return dateA - dateB;
-                });
-                setUpcomingContent(sorted);
-                setCache('homepage_upcoming', sorted);
-              }
-            }
-          } catch (error) {
-            console.error('获取TMDB即将上映数据失败:', error);
-          }
-
-          setLoading(false);
         } catch (error) {
-          console.error('获取推荐数据失败:', error);
-          setLoading(false);
+          console.error('获取最新收录失败:', error);
+        } finally {
+          setCmsLatestLoading(false);
         }
       })();
+    }
+
+    if (needsRefresh) {
+      // 豆瓣/TMDB/短剧/新番放到浏览器空闲时再拉（800ms 兜底），
+      // 不跟首屏的最新收录抢网络；6 路并行一次拉完，以前短剧和
+      // TMDB 是等豆瓣回来才串行拉，白白多等两轮。
+      const startDeferredLoad = () => {
+        (async () => {
+          try {
+            const [
+              moviesData,
+              tvShowsData,
+              varietyShowsData,
+              bangumiCalendarData,
+              duanjuResult,
+              upcomingResult,
+            ] = await Promise.all([
+              getDoubanCategories({
+                kind: 'movie',
+                category: '热门',
+                type: '全部',
+              }).catch((error) => {
+                console.error('获取热门电影数据失败:', error);
+                return null;
+              }),
+              getDoubanCategories({
+                kind: 'tv',
+                category: 'tv',
+                type: 'tv',
+              }).catch((error) => {
+                console.error('获取热门剧集数据失败:', error);
+                return null;
+              }),
+              getDoubanCategories({
+                kind: 'tv',
+                category: 'show',
+                type: 'show',
+              }).catch((error) => {
+                console.error('获取热门综艺数据失败:', error);
+                return null;
+              }),
+              GetBangumiCalendarData().catch((error) => {
+                console.error('获取新番放送数据失败:', error);
+                return [];
+              }),
+              (async () => {
+                try {
+                  const duanjuResponse = await fetch(
+                    '/api/duanju/recommends'
+                  );
+                  if (!duanjuResponse.ok) return null;
+                  return await duanjuResponse.json();
+                } catch (error) {
+                  console.error('获取热播短剧数据失败:', error);
+                  return null;
+                }
+              })(),
+              (async () => {
+                try {
+                  const response = await fetch('/api/tmdb/upcoming');
+                  if (!response.ok) return null;
+                  return await response.json();
+                } catch (error) {
+                  console.error('获取TMDB即将上映数据失败:', error);
+                  return null;
+                }
+              })(),
+            ]);
+
+            if (moviesData?.code === 200) {
+              setHotMovies(moviesData.list);
+              if (moviesData.list && moviesData.list.length > 0) {
+                setCache('homepage_movies', moviesData.list);
+              }
+            }
+            if (tvShowsData?.code === 200) {
+              setHotTvShows(tvShowsData.list);
+              if (tvShowsData.list && tvShowsData.list.length > 0) {
+                setCache('homepage_tvshows', tvShowsData.list);
+              }
+            }
+            if (varietyShowsData?.code === 200) {
+              setHotVarietyShows(varietyShowsData.list);
+              if (varietyShowsData.list && varietyShowsData.list.length > 0) {
+                setCache('homepage_variety', varietyShowsData.list);
+              }
+            }
+            setBangumiCalendarData(bangumiCalendarData);
+            if (bangumiCalendarData && bangumiCalendarData.length > 0) {
+              setCache('homepage_bangumi', bangumiCalendarData);
+            }
+
+            if (
+              duanjuResult?.code === 200 &&
+              duanjuResult.data &&
+              duanjuResult.data.length > 0
+            ) {
+              setHotDuanju(duanjuResult.data);
+              setCache('homepage_duanju', duanjuResult.data);
+            }
+
+            if (
+              upcomingResult?.code === 200 &&
+              upcomingResult.data &&
+              upcomingResult.data.length > 0
+            ) {
+              const sorted = [...upcomingResult.data].sort((a, b) => {
+                const dateA = new Date(
+                  a.release_date || '9999-12-31'
+                ).getTime();
+                const dateB = new Date(
+                  b.release_date || '9999-12-31'
+                ).getTime();
+                return dateA - dateB;
+              });
+              setUpcomingContent(sorted);
+              setCache('homepage_upcoming', sorted);
+            }
+
+            setLoading(false);
+          } catch (error) {
+            console.error('获取推荐数据失败:', error);
+            setLoading(false);
+          }
+        })();
+      };
+
+      if (
+        typeof window !== 'undefined' &&
+        'requestIdleCallback' in window
+      ) {
+        (window as any).requestIdleCallback(startDeferredLoad, {
+          timeout: 800,
+        });
+      } else {
+        setTimeout(startDeferredLoad, 500);
+      }
     }
   }, []);
 
@@ -567,6 +631,55 @@ function HomeClient() {
   // 渲染模块的函数
   const renderModule = (moduleId: string) => {
     switch (moduleId) {
+      case 'cmsLatest':
+        if (!cmsLatestLoading && cmsLatest.length === 0) return null;
+        return (
+          <section key='cmsLatest' className='mb-8'>
+            <div className='mb-4 flex items-center justify-between'>
+              <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
+                最新收录
+              </h2>
+              <Link
+                href='/source-search'
+                className='flex items-center text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+              >
+                查看更多
+                <ChevronRight className='w-4 h-4 ml-1' />
+              </Link>
+            </div>
+            <ScrollableRow>
+              {cmsLatestLoading
+                ? Array.from({ length: 8 }).map((_, index) => (
+                    <div
+                      key={index}
+                      className='min-w-[96px] w-24 sm:min-w-[180px] sm:w-44'
+                    >
+                      <div className='aspect-[2/3] bg-gray-200 dark:bg-gray-700 rounded-lg animate-pulse mb-2' />
+                      <div className='h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-3/4' />
+                    </div>
+                  ))
+                : cmsLatest.map((item) => (
+                    <div
+                      key={`${item.source}:${item.id}`}
+                      className='min-w-[96px] w-24 sm:min-w-[180px] sm:w-44'
+                    >
+                      <VideoCard
+                        id={item.id}
+                        source={item.source}
+                        source_name={item.source_name}
+                        poster={item.poster}
+                        title={item.title}
+                        year={item.year}
+                        type='movie'
+                        from='search'
+                        typeName={item.type_name}
+                      />
+                    </div>
+                  ))}
+            </ScrollableRow>
+          </section>
+        );
+
       case 'hotMovies':
         return (
           <section key='hotMovies' className='mb-8'>

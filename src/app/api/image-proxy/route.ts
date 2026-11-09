@@ -93,31 +93,20 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const imageUrl = searchParams.get('url');
   const source = searchParams.get('source') || undefined;
+  // 可选裁剪宽度（卡片海报传 360）：服务端用 sharp 缩到卡片尺寸再返回，
+  // 手机刷列表时不用下载几百 KB 的原图。超过 720 按 720 算。
+  const targetWidth = (() => {
+    const w = Number(searchParams.get('w'));
+    if (!Number.isFinite(w) || w <= 0) return 0;
+    return Math.min(720, Math.floor(w));
+  })();
 
   if (!imageUrl) {
     return NextResponse.json({ error: 'Missing image URL' }, { status: 400 });
   }
 
-  try {
-    const imageResponse = await fetchImage(imageUrl, { source });
-
-    if (!imageResponse.ok) {
-      return NextResponse.json(
-        { error: imageResponse.statusText },
-        { status: imageResponse.status }
-      );
-    }
-
-    const contentType = imageResponse.headers.get('content-type');
-
-    if (!imageResponse.body) {
-      return NextResponse.json(
-        { error: 'Image response has no body' },
-        { status: 500 }
-      );
-    }
-
-    // 创建响应头
+  // 创建响应头
+  const makeHeaders = (contentType: string | null) => {
     const headers = new Headers();
     if (contentType) {
       headers.set('Content-Type', contentType);
@@ -128,17 +117,68 @@ export async function GET(request: Request) {
     headers.set('CDN-Cache-Control', 'public, s-maxage=15720000');
     headers.set('Vercel-CDN-Cache-Control', 'public, s-maxage=15720000');
     headers.set('Netlify-Vary', 'query');
+    return headers;
+  };
+
+  try {
+    const imageResponse = await fetchImage(imageUrl, { source });
+
+    if (!imageResponse.ok || !imageResponse.body) {
+      // 代理取不到图（如源站防盗链）时 302 回原地址，让浏览器直连再试一次，
+      // 而不是直接返回一张裂图。
+      return NextResponse.redirect(imageUrl, 302);
+    }
+
+    const contentType = imageResponse.headers.get('content-type');
+
+    // 需要裁剪且是图片时，用 sharp 缩图；任何一步失败都回退到原图直出。
+    if (
+      targetWidth > 0 &&
+      contentType &&
+      contentType.startsWith('image/') &&
+      !contentType.includes('svg')
+    ) {
+      try {
+        const buffer = Buffer.from(await imageResponse.arrayBuffer());
+        const sharp = (await import('sharp')).default;
+        const resized = await sharp(buffer)
+          .resize({ width: targetWidth, withoutEnlargement: true })
+          .toBuffer();
+        return new Response(resized as unknown as BodyInit, {
+          status: 200,
+          headers: makeHeaders(contentType),
+        });
+      } catch (resizeError) {
+        console.warn('图片裁剪失败，回退原图:', resizeError);
+        // 下面重新取一次原图流返回（arrayBuffer 已消费，不能复用旧 body）
+        const retryResponse = await fetchImage(imageUrl, { source });
+        if (!retryResponse.ok || !retryResponse.body) {
+          return NextResponse.redirect(imageUrl, 302);
+        }
+        return new Response(retryResponse.body as unknown as BodyInit, {
+          status: 200,
+          headers: makeHeaders(
+            retryResponse.headers.get('content-type') || contentType
+          ),
+        });
+      }
+    }
 
     // 直接返回图片流
-    return new Response(imageResponse.body, {
+    return new Response(imageResponse.body as unknown as BodyInit, {
       status: 200,
-      headers,
+      headers: makeHeaders(contentType),
     });
   } catch (error) {
     console.error('图片代理请求失败:', error);
-    return NextResponse.json(
-      { error: 'Error fetching image' },
-      { status: 500 }
-    );
+    // 代理本身异常时同样回原地址，让浏览器直连兜底。
+    try {
+      return NextResponse.redirect(imageUrl, 302);
+    } catch {
+      return NextResponse.json(
+        { error: 'Error fetching image' },
+        { status: 500 }
+      );
+    }
   }
 }
