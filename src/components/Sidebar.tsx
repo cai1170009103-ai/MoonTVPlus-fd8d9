@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Blend, Cat, Clover, Container, Film, Globe, Home, Menu, Search, Star, Tv, TvMinimalPlay, Users } from 'lucide-react';
+import { Blend, Cat, Clover, Container, Film, Flame, Globe, Home, Menu, Search, Star, Tv, TvMinimalPlay, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import {
@@ -155,6 +155,11 @@ const Sidebar = ({ onToggle, activePath = '/' }: SidebarProps) => {
       href: '/douban?type=show',
     },
     {
+      icon: Flame,
+      label: 'AV',
+      href: '/av',
+    },
+    {
       icon: TvMinimalPlay,
       label: '电视直播',
       href: '/live',
@@ -186,15 +191,17 @@ const Sidebar = ({ onToggle, activePath = '/' }: SidebarProps) => {
         label: '综艺',
         href: '/douban?type=show',
       },
-      ...(runtimeConfig?.LIVE_ENABLED
-        ? [
-            {
-              icon: TvMinimalPlay,
-              label: '电视直播',
-              href: '/live',
-            },
-          ]
-        : []),
+      {
+        icon: Flame,
+        label: 'AV',
+        href: '/av',
+      },
+      // 直播源已配置，直接展示入口（不再等 LIVE_ENABLED 开关）
+      {
+        icon: TvMinimalPlay,
+        label: '电视直播',
+        href: '/live',
+      },
     ];
 
     // 如果启用网络直播，添加网络直播入口

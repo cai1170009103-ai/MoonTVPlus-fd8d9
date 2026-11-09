@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Blend, Cat, Clover, Container, Film, Globe, Home, Star, Tv, TvMinimalPlay, Users } from 'lucide-react';
+import { Blend, Cat, Clover, Container, Film, Flame, Globe, Home, Star, Tv, TvMinimalPlay, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -54,6 +54,11 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
       label: '综艺',
       href: '/douban?type=show',
     },
+    {
+      icon: Flame,
+      label: 'AV',
+      href: '/av',
+    },
       {
         icon: TvMinimalPlay,
         label: '电视直播',
@@ -87,15 +92,18 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
         label: '综艺',
         href: '/douban?type=show',
       },
-      ...(runtimeConfig?.LIVE_ENABLED
-        ? [
-            {
-              icon: TvMinimalPlay,
-              label: '电视直播',
-              href: '/live',
-            },
-          ]
-        : []),
+      {
+        icon: Flame,
+        label: 'AV',
+        href: '/av',
+      },
+      // 直播源已配置，直接展示入口（不再等 LIVE_ENABLED 开关，
+      // 避免配置缓存导致入口时有时无）
+      {
+        icon: TvMinimalPlay,
+        label: '电视直播',
+        href: '/live',
+      },
     ];
 
     // 如果启用网络直播，添加网络直播入口
@@ -178,7 +186,9 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
             <li
               key={item.href}
               className='flex-shrink-0'
-              style={{ width: '20vw', minWidth: '20vw' }}
+              // 导航项均分整行（7 项时每项约 14vw，图标+文字仍放得下），
+              // 不再固定 20vw，避免加项后出现横向滚动
+              style={{ flex: '1 1 0', minWidth: 0 }}
             >
               <Link
                 href={item.href}
