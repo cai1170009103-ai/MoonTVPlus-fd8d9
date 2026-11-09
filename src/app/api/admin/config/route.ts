@@ -38,8 +38,12 @@ export async function GET(request: NextRequest) {
       const { db } = await import('@/lib/db');
       const userInfoV2 = await db.getUserInfoV2(username);
 
-      if (userInfoV2 && userInfoV2.role === 'admin' && !userInfoV2.banned) {
-        result.Role = 'admin';
+      if (
+        userInfoV2 &&
+        (userInfoV2.role === 'admin' || userInfoV2.role === 'owner') &&
+        !userInfoV2.banned
+      ) {
+        result.Role = userInfoV2.role;
       } else {
         return NextResponse.json(
           { error: '你是管理员吗你就访问？' },

@@ -32,10 +32,14 @@ export async function POST(request: NextRequest) {
 
     // 仅站长可以修改配置文件
     if (username !== process.env.USERNAME) {
-      return NextResponse.json(
-        { error: '权限不足，只有站长可以修改配置文件' },
-        { status: 401 }
-      );
+      // 环境变量比对失败时，以数据库中的 owner 角色为准（数据库建的站长账号 role 为 owner）
+      const ownerInfo = await db.getUserInfoV2(username);
+      if (!ownerInfo || ownerInfo.role !== 'owner' || ownerInfo.banned) {
+        return NextResponse.json(
+          { error: '权限不足，只有站长可以修改配置文件' },
+          { status: 401 }
+        );
+      }
     }
 
     // 获取请求体
