@@ -816,7 +816,7 @@ const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 // 每个女优的去重后作品数（搜索接口只返回第一页，所以是第一页的去重数）
 const [counts, setCounts] = useState<Record<string, number>>({});
 const [counting, setCounting] = useState(false);
-const [cupFilter, setCupFilter] = useState<CupFilter>('全部');
+const [cupFilter, setCupFilter] = useState<CupFilter>('A');
 const abortRef = useRef<AbortController | null>(null);
 const countsRef = useRef<Record<string, number>>({});
 useEffect(() => {
