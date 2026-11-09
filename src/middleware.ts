@@ -170,6 +170,7 @@ function shouldSkipAuth(pathname: string): boolean {
   const skipPaths = [
     '/_next',
     '/favicon.ico',
+    '/adult-live.m3u',
     '/robots.txt',
     '/manifest.json',
     '/icons/',
