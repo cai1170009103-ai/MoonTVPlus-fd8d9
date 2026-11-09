@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { canViewAdult } from '@/lib/adult-access';
 import { getAvailableApiSites, getCacheTime, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { getProxyToken } from '@/lib/emby-token';
@@ -44,6 +45,8 @@ export async function GET(request: NextRequest) {
   }
 
   const config = await getConfig();
+  // 无成人权限的用户强制启用黄色过滤（哪怕全局开关已关闭）
+  const adultAllowed = await canViewAdult(authInfo.username);
   const apiSites = privateOnly
     ? []
     : await getAvailableApiSites(authInfo.username, specialOnly);
@@ -274,7 +277,7 @@ export async function GET(request: NextRequest) {
       weight: result.weight ?? (weightMap.get(result.source) ?? 0),
     }));
 
-    if (!config.SiteConfig.DisableYellowFilter) {
+    if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
       flattenedResults = flattenedResults.filter((result) => {
         const typeName = result.type_name || '';
         return !yellowWords.some((word: string) => typeName.includes(word));

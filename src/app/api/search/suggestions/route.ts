@@ -7,6 +7,7 @@ import { getAuthInfoFromCookie } from '@/lib/auth';
 import { getAvailableApiSites, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { yellowWords } from '@/lib/yellow';
+import { canViewAdult } from '@/lib/adult-access';
 
 export const runtime = 'nodejs';
 
@@ -58,6 +59,8 @@ async function generateSuggestions(config: AdminConfig, query: string, username:
 > {
   const queryLower = query.toLowerCase();
 
+  // 无成人权限的用户强制启用黄色过滤（哪怕全局开关已关闭）
+  const adultAllowed = await canViewAdult(username);
   const apiSites = await getAvailableApiSites(username);
   let realKeywords: string[] = [];
 
@@ -69,7 +72,7 @@ async function generateSuggestions(config: AdminConfig, query: string, username:
     realKeywords = Array.from(
       new Set(
         results
-          .filter((r: any) => config.SiteConfig.DisableYellowFilter || !yellowWords.some((word: string) => (r.type_name || '').includes(word)))
+          .filter((r: any) => (config.SiteConfig.DisableYellowFilter && adultAllowed) || !yellowWords.some((word: string) => (r.type_name || '').includes(word)))
           .map((r: any) => r.title)
           .filter(Boolean)
           .flatMap((title: string) => title.split(/[ -:：·、-]/))

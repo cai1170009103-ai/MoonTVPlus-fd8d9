@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
 import { db } from '@/lib/db';
 import { PlayRecord } from '@/lib/types';
 
@@ -46,6 +47,15 @@ export async function GET(request: NextRequest) {
     }
 
     const records = await db.getAllPlayRecords(authInfo.username);
+    // 无成人权限：继续观看里不出现 AV 记录（只过滤返回结果，不删除数据，
+    // 权限开通后记录会重新出现）
+    if (!(await canViewAdult(authInfo.username))) {
+      for (const key of Object.keys(records)) {
+        if (isAdultApiSiteKey(key.split('+')[0])) {
+          delete (records as Record<string, unknown>)[key];
+        }
+      }
+    }
     return NextResponse.json(records, { status: 200 });
   } catch (err) {
     console.error('获取播放记录失败', err);

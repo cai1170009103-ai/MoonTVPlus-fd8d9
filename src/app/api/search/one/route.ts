@@ -10,6 +10,7 @@ import {
   normalizeScriptSources,
 } from '@/lib/source-script';
 import { yellowWords } from '@/lib/yellow';
+import { canViewAdult } from '@/lib/adult-access';
 
 export const runtime = 'nodejs';
 
@@ -40,6 +41,8 @@ export async function GET(request: NextRequest) {
   }
 
   const config = await getConfig();
+  // 无成人权限的用户强制启用黄色过滤（哪怕全局开关已关闭）
+  const adultAllowed = await canViewAdult(authInfo.username);
   const apiSites = await getAvailableApiSites(authInfo.username);
 
   try {
@@ -75,7 +78,7 @@ export async function GET(request: NextRequest) {
       );
 
       let result = scriptResults.flat().filter((r) => r.title === query);
-      if (!config.SiteConfig.DisableYellowFilter) {
+      if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
         result = result.filter((item) => {
           const typeName = item.type_name || '';
           return !yellowWords.some((word: string) => typeName.includes(word));
@@ -120,7 +123,7 @@ export async function GET(request: NextRequest) {
 
     const results = await searchFromApi(targetSite, query);
     let result = results.filter((r) => r.title === query);
-    if (!config.SiteConfig.DisableYellowFilter) {
+    if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
       result = result.filter((result) => {
         const typeName = result.type_name || '';
         return !yellowWords.some((word: string) => typeName.includes(word));

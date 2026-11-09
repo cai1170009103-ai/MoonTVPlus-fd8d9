@@ -9,6 +9,7 @@ import './globals.css';
 import { parseAuthInfo } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
 import { getUserFeatureAccess } from '@/lib/permissions';
+import { canViewAdult } from '@/lib/adult-access';
 import { listEnabledSourceScripts } from '@/lib/source-script';
 
 import { StartupCacheCleanup } from '../components/DanmakuCacheCleanup';
@@ -149,6 +150,9 @@ export default async function RootLayout({
     storageType === 'localstorage'
       ? await getUserFeatureAccess(process.env.USERNAME || 'localstorage-owner')
       : await getUserFeatureAccess(null);
+  // 成人内容权限：localstorage 单机模式视同站长，始终允许；
+  // 多用户模式按当前登录账号查 users.can_view_adult。
+  let adultEnabled = true;
   let customCategories = [] as {
     name: string;
     type: 'movie' | 'tv';
@@ -158,6 +162,7 @@ export default async function RootLayout({
     const cookieStore = await cookies();
     const authInfo = parseAuthInfo(cookieStore.get('auth')?.value);
     userFeatureAccess = await getUserFeatureAccess(authInfo?.username);
+    adultEnabled = await canViewAdult(authInfo?.username);
 
     const config = await getConfig();
     siteName = config.SiteConfig.SiteName;
@@ -353,6 +358,7 @@ export default async function RootLayout({
     AI_DEFAULT_MESSAGE_NO_VIDEO: aiDefaultMessageNoVideo,
     AI_DEFAULT_MESSAGE_WITH_VIDEO: aiDefaultMessageWithVideo,
     ENABLE_MOVIE_REQUEST: enableMovieRequest,
+    ADULT_ENABLED: adultEnabled,
     LIVE_ENABLED: liveEnabled && userFeatureAccess.live,
     WEB_LIVE_ENABLED: webLiveEnabled && userFeatureAccess.web_live,
     ADVANCED_RECOMMENDATION_ENABLED: advancedRecommendationEnabled,

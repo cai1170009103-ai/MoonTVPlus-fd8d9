@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
+import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
 import { db } from '@/lib/db';
 import { Favorite } from '@/lib/types';
 
@@ -60,12 +61,27 @@ export async function GET(request: NextRequest) {
           { status: 400 }
         );
       }
+      // 无成人权限：单条 AV 收藏也查不到
+      if (
+        isAdultApiSiteKey(source) &&
+        !(await canViewAdult(authInfo.username))
+      ) {
+        return NextResponse.json(null, { status: 200 });
+      }
       const fav = await db.getFavorite(authInfo.username, source, id);
       return NextResponse.json(fav, { status: 200 });
     }
 
     // 查询全部收藏
     const favorites = await db.getAllFavorites(authInfo.username);
+    // 无成人权限：收藏列表里不出现 AV（只过滤返回结果，不删除数据）
+    if (!(await canViewAdult(authInfo.username))) {
+      for (const key of Object.keys(favorites)) {
+        if (isAdultApiSiteKey(key.split('+')[0])) {
+          delete (favorites as Record<string, unknown>)[key];
+        }
+      }
+    }
     return NextResponse.json(favorites, { status: 200 });
   } catch (err) {
     console.error('获取收藏失败', err);

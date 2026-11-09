@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-console, @typescript-eslint/no-non-null-assertion */
 
 import { db } from '@/lib/db';
+import { canViewAdult, isAdultApiSiteKey } from '@/lib/adult-access';
 import { normalizeApiBaseUrl } from '@/lib/url';
 
 import { AdminConfig } from './admin.types';
@@ -1304,24 +1305,32 @@ export async function getAvailableApiSites(
     return allApiSites;
   }
 
+  // 成人内容权限：无权限的用户看不到 AV 源（av_ 开头）。
+  // 站长与管理员在 canViewAdult 里始终返回 true。
+  const adultAllowed = await canViewAdult(user);
+  const filterAdultSources = <T extends { key: string }>(sites: T[]): T[] =>
+    adultAllowed ? sites : sites.filter((s) => !isAdultApiSiteKey(s.key));
+
   // 从V2存储中获取用户信息
   const userInfoV2 = await db.getUserInfoV2(user);
   if (!userInfoV2) {
-    return allApiSites;
+    return filterAdultSources(allApiSites);
   }
 
   // 优先根据用户自己的 enabledApis 配置查找
   if (userInfoV2.enabledApis && userInfoV2.enabledApis.length > 0) {
     const userApiSitesSet = new Set(userInfoV2.enabledApis);
-    return allApiSites
-      .filter((s) => userApiSitesSet.has(s.key))
-      .map((s) => ({
-        key: s.key,
-        name: s.name,
-        api: s.api,
-        detail: s.detail,
-        proxyMode: s.proxyMode,
-      }));
+    return filterAdultSources(
+      allApiSites
+        .filter((s) => userApiSitesSet.has(s.key))
+        .map((s) => ({
+          key: s.key,
+          name: s.name,
+          api: s.api,
+          detail: s.detail,
+          proxyMode: s.proxyMode,
+        }))
+    );
   }
 
   // 如果没有 enabledApis 配置，则根据 tags 查找
@@ -1339,20 +1348,22 @@ export async function getAvailableApiSites(
     });
 
     if (enabledApisFromTags.size > 0) {
-      return allApiSites
-        .filter((s) => enabledApisFromTags.has(s.key))
-        .map((s) => ({
-          key: s.key,
-          name: s.name,
-          api: s.api,
-          detail: s.detail,
-          proxyMode: s.proxyMode,
-        }));
+      return filterAdultSources(
+        allApiSites
+          .filter((s) => enabledApisFromTags.has(s.key))
+          .map((s) => ({
+            key: s.key,
+            name: s.name,
+            api: s.api,
+            detail: s.detail,
+            proxyMode: s.proxyMode,
+          }))
+      );
     }
   }
 
   // 如果都没有配置，返回所有可用的 API 站点
-  return allApiSites;
+  return filterAdultSources(allApiSites);
 }
 
 export async function setCachedConfig(config: AdminConfig) {

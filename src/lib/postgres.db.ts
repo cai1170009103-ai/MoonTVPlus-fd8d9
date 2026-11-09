@@ -32,6 +32,11 @@ import {
 } from './music-v2';
 import { dispatchNotificationChannels } from './notification-dispatch';
 
+// 成人权限列是否已确认存在（每个 server 实例只尝试建一次）。
+// 线上库若还没跑过 015 迁移，第一次开关成人权限时由这里兜底建列，
+// 而不是等管理员手动跑迁移。
+let adultColumnEnsured = false;
+
 /**
  * Vercel Postgres 存储实现
  *
@@ -53,6 +58,30 @@ export class PostgresStorage implements IStorage {
     this.db = adapter;
     // 创建一个简单的适配器用于设备管理
     this.adapter = new PostgresRedisHashAdapter(adapter);
+  }
+
+  /**
+   * 确保 users.can_view_adult 列存在（015 迁移的运行时兜底）。
+   * 列已存在时 ALTER 是空操作。返回列是否可用；建列失败返回 false，
+   * 调用方自行决定是报错（写权限时）还是降级（读列表时）。
+   */
+  private async ensureCanViewAdultColumn(): Promise<boolean> {
+    if (adultColumnEnsured) return true;
+    try {
+      await this.db
+        .prepare(
+          'ALTER TABLE users ADD COLUMN IF NOT EXISTS can_view_adult INTEGER DEFAULT 0'
+        )
+        .run();
+      adultColumnEnsured = true;
+      return true;
+    } catch (err) {
+      console.error(
+        'PostgresStorage.ensureCanViewAdultColumn error:',
+        err
+      );
+      return false;
+    }
   }
 
   // ==================== 播放记录 ====================
@@ -515,6 +544,8 @@ export class PostgresStorage implements IStorage {
           enabledApis: user.enabled_apis
             ? JSON.parse(user.enabled_apis as string)
             : undefined,
+          // 列不存在的老库返回 undefined，视同不允许
+          canViewAdult: (user as any).can_view_adult === 1,
           created_at: user.created_at as number,
           playrecord_migrated: user.playrecord_migrated === 1,
           favorite_migrated: user.favorite_migrated === 1,
@@ -587,10 +618,17 @@ export class PostgresStorage implements IStorage {
     role: 'owner' | 'admin' | 'user',
     tags?: string[],
     oidcSub?: string,
-    enabledApis?: string[]
+    enabledApis?: string[],
+    canViewAdult?: boolean
   ): Promise<void> {
     try {
       const passwordHash = await this.hashPassword(password);
+
+      // 新用户默认不允许看成人内容；只有管理员明确勾选时才写 1。
+      // INSERT 里带了 can_view_adult 列，所以先确保列存在（每个实例只建一次）。
+      if (!(await this.ensureCanViewAdultColumn())) {
+        throw new Error('无法创建成人权限列，请先执行 015 号数据库迁移');
+      }
 
       await this.db
         .prepare(
@@ -598,9 +636,9 @@ export class PostgresStorage implements IStorage {
           INSERT INTO users (
             username, password_hash, role, banned, tags, oidc_sub,
             enabled_apis, created_at, playrecord_migrated,
-            favorite_migrated, skip_migrated
+            favorite_migrated, skip_migrated, can_view_adult
           )
-          VALUES ($1, $2, $3, 0, $4, $5, $6, $7, 1, 1, 1)
+          VALUES ($1, $2, $3, 0, $4, $5, $6, $7, 1, 1, 1, $8)
         `
         )
         .bind(
@@ -610,7 +648,8 @@ export class PostgresStorage implements IStorage {
           tags ? JSON.stringify(tags) : null,
           oidcSub || null,
           enabledApis ? JSON.stringify(enabledApis) : null,
-          Date.now()
+          Date.now(),
+          canViewAdult ? 1 : 0
         )
         .run();
     } catch (err) {
@@ -685,12 +724,16 @@ export class PostgresStorage implements IStorage {
         }
       }
 
+      // 老库可能还没跑 015 迁移：列不存在时降级查询（成人权限一律按不允许展示），
+      // 不能让整个用户列表因此打不开。
+      const hasAdultColumn = await this.ensureCanViewAdultColumn();
+      const adultColumnSql = hasAdultColumn ? ', can_view_adult' : '';
       // 获取用户列表（按创建时间降序）
       const listQuery = trimmedSearch
         ? this.db
             .prepare(
               `
-              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at
+              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at${adultColumnSql}
               FROM users
               WHERE username LIKE $1
               ORDER BY created_at DESC
@@ -701,7 +744,7 @@ export class PostgresStorage implements IStorage {
         : this.db
             .prepare(
               `
-              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at
+              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at${adultColumnSql}
               FROM users
               ORDER BY created_at DESC
               LIMIT $1 OFFSET $2
@@ -725,6 +768,7 @@ export class PostgresStorage implements IStorage {
           tags: ownerInfo?.tags,
           oidcSub: ownerInfo?.oidcSub,
           enabledApis: ownerInfo?.enabledApis,
+          canViewAdult: ownerInfo?.canViewAdult === true,
           created_at: ownerInfo?.created_at || 0,
         });
       }
@@ -746,6 +790,7 @@ export class PostgresStorage implements IStorage {
             enabledApis: user.enabled_apis
               ? JSON.parse(user.enabled_apis as string)
               : undefined,
+            canViewAdult: (user as any).can_view_adult === 1,
             created_at: user.created_at as number,
           });
         }
@@ -783,6 +828,7 @@ export class PostgresStorage implements IStorage {
       tags?: string[];
       oidcSub?: string;
       enabledApis?: string[];
+      canViewAdult?: boolean;
     }
   ): Promise<void> {
     try {
@@ -809,6 +855,13 @@ export class PostgresStorage implements IStorage {
       if (updates.enabledApis !== undefined) {
         fields.push(`enabled_apis = $${paramIndex++}`);
         values.push(JSON.stringify(updates.enabledApis));
+      }
+      if (updates.canViewAdult !== undefined) {
+        if (!(await this.ensureCanViewAdultColumn())) {
+          throw new Error('无法创建成人权限列，请先执行 015 号数据库迁移');
+        }
+        fields.push(`can_view_adult = $${paramIndex++}`);
+        values.push(updates.canViewAdult ? 1 : 0);
       }
 
       if (fields.length === 0) return;

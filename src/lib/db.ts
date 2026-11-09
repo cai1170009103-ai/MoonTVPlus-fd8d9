@@ -588,7 +588,8 @@ export class DbManager {
     role: 'owner' | 'admin' | 'user' = 'user',
     tags?: string[],
     oidcSub?: string,
-    enabledApis?: string[]
+    enabledApis?: string[],
+    canViewAdult?: boolean
   ): Promise<void> {
     if (typeof (this.storage as any).createUserV2 === 'function') {
       await (this.storage as any).createUserV2(
@@ -597,7 +598,8 @@ export class DbManager {
         role,
         tags,
         oidcSub,
-        enabledApis
+        enabledApis,
+        canViewAdult
       );
     }
   }
@@ -615,6 +617,7 @@ export class DbManager {
     tags?: string[];
     oidcSub?: string;
     enabledApis?: string[];
+    canViewAdult?: boolean;
     created_at: number;
     playrecord_migrated?: boolean;
     favorite_migrated?: boolean;
@@ -634,6 +637,7 @@ export class DbManager {
       tags?: string[];
       oidcSub?: string;
       enabledApis?: string[];
+      canViewAdult?: boolean;
     }
   ): Promise<void> {
     if (typeof (this.storage as any).updateUserInfoV2 === 'function') {
@@ -674,6 +678,7 @@ export class DbManager {
       tags?: string[];
       oidcSub?: string;
       enabledApis?: string[];
+      canViewAdult?: boolean;
       created_at: number;
     }>;
     total: number;

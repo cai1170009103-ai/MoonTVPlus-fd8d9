@@ -44,6 +44,9 @@ import { dispatchNotificationChannels } from './notification-dispatch';
  * 2. 开发环境：运行 npm run init:sqlite
  * 3. 生产环境：配置 wrangler.toml 并运行迁移
  */
+// 成人权限列是否已确认存在（每个 server 实例只尝试建一次）
+let d1AdultColumnEnsured = false;
+
 export class D1Storage implements IStorage {
   private db: DatabaseAdapter;
   public adapter: RedisHashAdapter;
@@ -52,6 +55,24 @@ export class D1Storage implements IStorage {
     this.db = adapter;
     // 创建 Redis Hash 兼容适配器用于设备管理
     this.adapter = new RedisHashAdapter(adapter);
+  }
+
+  /**
+   * 确保 users.can_view_adult 列存在。SQLite 的 ADD COLUMN 不支持
+   * IF NOT EXISTS，列已存在时会报错，吃掉该错误即视为已存在。
+   */
+  private async ensureCanViewAdultColumn(): Promise<boolean> {
+    if (d1AdultColumnEnsured) return true;
+    try {
+      await this.db
+        .prepare('ALTER TABLE users ADD COLUMN can_view_adult INTEGER DEFAULT 0')
+        .run();
+    } catch (err) {
+      // 列已存在时 SQLite 会报错，这属于预期情况
+      console.log('D1Storage.ensureCanViewAdultColumn: column may already exist');
+    }
+    d1AdultColumnEnsured = true;
+    return true;
   }
 
   // ==================== 播放记录 ====================
@@ -1359,6 +1380,8 @@ export class D1Storage implements IStorage {
           enabledApis: user.enabled_apis
             ? JSON.parse(user.enabled_apis as string)
             : undefined,
+          // 列不存在的老库返回 undefined，视同不允许
+          canViewAdult: (user as any).can_view_adult === 1,
           created_at: user.created_at as number,
           playrecord_migrated: user.playrecord_migrated === 1,
           favorite_migrated: user.favorite_migrated === 1,
@@ -1537,12 +1560,15 @@ export class D1Storage implements IStorage {
         }
       }
 
+      // 老库可能还没建成人权限列：列不存在时降级查询，不能让用户列表打不开
+      const hasAdultColumn = await this.ensureCanViewAdultColumn();
+      const adultColumnSql = hasAdultColumn ? ', can_view_adult' : '';
       // 获取用户列表（按创建时间降序）
       const listQuery = trimmedSearch
         ? this.db
             .prepare(
               `
-              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at
+              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at${adultColumnSql}
               FROM users
               WHERE username LIKE ?
               ORDER BY created_at DESC
@@ -1553,7 +1579,7 @@ export class D1Storage implements IStorage {
         : this.db
             .prepare(
               `
-              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at
+              SELECT username, role, banned, tags, oidc_sub, enabled_apis, created_at${adultColumnSql}
               FROM users
               ORDER BY created_at DESC
               LIMIT ? OFFSET ?
@@ -1577,6 +1603,7 @@ export class D1Storage implements IStorage {
           tags: ownerInfo?.tags,
           oidcSub: ownerInfo?.oidcSub,
           enabledApis: ownerInfo?.enabledApis,
+          canViewAdult: ownerInfo?.canViewAdult === true,
           created_at: ownerInfo?.created_at || 0,
         });
       }
@@ -1598,6 +1625,7 @@ export class D1Storage implements IStorage {
             enabledApis: user.enabled_apis
               ? JSON.parse(user.enabled_apis as string)
               : undefined,
+            canViewAdult: (user as any).can_view_adult === 1,
             created_at: user.created_at as number,
           });
         }
@@ -1635,6 +1663,7 @@ export class D1Storage implements IStorage {
       tags?: string[];
       oidcSub?: string;
       enabledApis?: string[];
+      canViewAdult?: boolean;
     }
   ): Promise<void> {
     try {
@@ -1660,6 +1689,11 @@ export class D1Storage implements IStorage {
       if (updates.enabledApis !== undefined) {
         fields.push('enabled_apis = ?');
         values.push(JSON.stringify(updates.enabledApis));
+      }
+      if (updates.canViewAdult !== undefined) {
+        await this.ensureCanViewAdultColumn();
+        fields.push('can_view_adult = ?');
+        values.push(updates.canViewAdult ? 1 : 0);
       }
 
       if (fields.length === 0) return;

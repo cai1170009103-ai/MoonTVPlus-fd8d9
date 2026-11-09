@@ -7,6 +7,7 @@ import { getAvailableApiSites, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { hasFeaturePermission } from '@/lib/permissions';
 import { yellowWords } from '@/lib/yellow';
+import { canViewAdult } from '@/lib/adult-access';
 import { getProxyToken } from '@/lib/emby-token';
 import {
   executeSavedSourceScript,
@@ -22,6 +23,9 @@ export async function GET(request: NextRequest) {
   if (!authInfo || !authInfo.username) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+
+  // 无成人权限的用户强制启用黄色过滤（哪怕全局开关已关闭）
+  const adultAllowed = await canViewAdult(authInfo.username);
 
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('q');
@@ -383,7 +387,7 @@ export async function GET(request: NextRequest) {
 
           // 过滤黄色内容
           let filteredResults = safeResults;
-          if (!config.SiteConfig.DisableYellowFilter) {
+          if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
             filteredResults = safeResults.filter((result) => {
               const typeName = result.type_name || '';
               return !yellowWords.some((word: string) => typeName.includes(word));
@@ -505,7 +509,7 @@ export async function GET(request: NextRequest) {
           );
 
           let filteredResults = sourceResults.flat();
-          if (!config.SiteConfig.DisableYellowFilter) {
+          if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
             filteredResults = filteredResults.filter((result) => {
               const typeName = result.type_name || '';
               return !yellowWords.some((word: string) => typeName.includes(word));

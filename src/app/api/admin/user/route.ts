@@ -34,6 +34,7 @@ const ACTIONS = [
   'changePassword',
   'deleteUser',
   'updateUserApis',
+  'setAdultAccess',
   'userGroup',
   'updateUserGroups',
   'batchUpdateUserGroups',
@@ -178,8 +179,21 @@ export async function POST(request: NextRequest) {
         const { userGroup } = body as { userGroup?: string };
         const tags = userGroup && userGroup.trim() ? [userGroup] : undefined;
 
+        // 新用户默认不允许看成人内容，只有管理员明确勾选时才开通
+        const { canViewAdult: newUserCanViewAdult } = body as {
+          canViewAdult?: boolean;
+        };
+
         // 使用新版本创建用户
-        await db.createUserV2(targetUsername!, targetPassword, 'user', tags);
+        await db.createUserV2(
+          targetUsername!,
+          targetPassword,
+          'user',
+          tags,
+          undefined,
+          undefined,
+          newUserCanViewAdult === true
+        );
 
         // 不再更新配置，因为用户已经存储在新版本中
         // 构造一个虚拟的targetEntry用于后续逻辑
@@ -370,6 +384,45 @@ export async function POST(request: NextRequest) {
         // 更新V2存储中的采集源权限
         await db.updateUserInfoV2(targetUsername!, {
           enabledApis: enabledApis && enabledApis.length > 0 ? enabledApis : []
+        });
+
+        break;
+      }
+      case 'setAdultAccess': {
+        if (!targetEntry) {
+          return NextResponse.json(
+            { error: '目标用户不存在' },
+            { status: 404 }
+          );
+        }
+
+        const { canViewAdult: targetCanViewAdult } = body as {
+          canViewAdult?: boolean;
+        };
+        if (typeof targetCanViewAdult !== 'boolean') {
+          return NextResponse.json(
+            { error: '缺少成人权限参数' },
+            { status: 400 }
+          );
+        }
+
+        // 站长始终拥有成人内容权限，前面已由“无法操作站长”拦截；
+        // 这里只拦管理员去改其他管理员
+        if (
+          isTargetAdmin &&
+          operatorRole !== 'owner' &&
+          username !== targetUsername
+        ) {
+          return NextResponse.json(
+            { error: '仅站长可配置其他管理员的成人权限' },
+            { status: 401 }
+          );
+        }
+
+        // 权限按请求实时读取，无需踢掉目标用户会话；
+        // 下一次请求即按新权限生效
+        await db.updateUserInfoV2(targetUsername!, {
+          canViewAdult: targetCanViewAdult,
         });
 
         break;

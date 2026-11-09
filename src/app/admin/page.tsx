@@ -591,6 +591,7 @@ const UserConfig = ({
     username: '',
     password: '',
     userGroup: '', // 新增用户组字段
+    canViewAdult: false, // 是否允许查看成人内容（AV），默认关闭
   });
   const [changePasswordUser, setChangePasswordUser] = useState({
     username: '',
@@ -699,6 +700,7 @@ const UserConfig = ({
     tags?: string[];
     created_at?: number;
     oidcSub?: string;
+    canViewAdult?: boolean;
   }> = !hasOldUserData && usersV2 ? usersV2 : config?.UserConfig?.Users || [];
 
   // 使用 useMemo 计算全选状态，避免每次渲染都重新计算
@@ -886,6 +888,17 @@ const UserConfig = ({
     );
   };
 
+  // 切换用户的成人内容（AV）查看权限：站长/管理员始终允许，不经过这里；
+  // 普通用户点一下即开关，下次请求立即生效，无需重新登录
+  const handleToggleAdultAccess = async (
+    uname: string,
+    current: boolean
+  ) => {
+    await withLoading(`adultAccess_${uname}`, () =>
+      handleUserAction('setAdultAccess', uname, undefined, undefined, !current)
+    );
+  };
+
   const handleAddUser = async () => {
     if (!newUser.username || !newUser.password) return;
     await withLoading('addUser', async () => {
@@ -893,9 +906,10 @@ const UserConfig = ({
         'add',
         newUser.username,
         newUser.password,
-        newUser.userGroup
+        newUser.userGroup,
+        newUser.canViewAdult
       );
-      setNewUser({ username: '', password: '', userGroup: '' });
+      setNewUser({ username: '', password: '', userGroup: '', canViewAdult: false });
       setShowAddUserForm(false);
     });
   };
@@ -1169,10 +1183,12 @@ const UserConfig = ({
       | 'setAdmin'
       | 'cancelAdmin'
       | 'changePassword'
-      | 'deleteUser',
+      | 'deleteUser'
+      | 'setAdultAccess',
     targetUsername: string,
     targetPassword?: string,
-    userGroup?: string
+    userGroup?: string,
+    canViewAdult?: boolean
   ) => {
     try {
       const res = await fetch('/api/admin/user', {
@@ -1182,6 +1198,7 @@ const UserConfig = ({
           targetUsername,
           ...(targetPassword ? { targetPassword } : {}),
           ...(userGroup ? { userGroup } : {}),
+          ...(canViewAdult !== undefined ? { canViewAdult } : {}),
           action,
         }),
       });
@@ -1568,6 +1585,23 @@ const UserConfig = ({
                   ))}
                 </select>
               </div>
+              <label className='flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer'>
+                <input
+                  type='checkbox'
+                  checked={newUser.canViewAdult}
+                  onChange={(e) =>
+                    setNewUser((prev) => ({
+                      ...prev,
+                      canViewAdult: e.target.checked,
+                    }))
+                  }
+                  className='w-4 h-4 text-green-600 bg-gray-100 border-gray-300 rounded focus:ring-green-500 dark:focus:ring-green-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600'
+                />
+                允许查看成人内容（AV）
+                <span className='text-xs text-gray-500 dark:text-gray-400'>
+                  不勾选则该用户看不到 AV 页、搜不到 AV 内容
+                </span>
+              </label>
               <div className='flex justify-end'>
                 <button
                   onClick={handleAddUser}
@@ -1735,6 +1769,12 @@ const UserConfig = ({
                   </th>
                   <th
                     scope='col'
+                    className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'
+                  >
+                    成人内容
+                  </th>
+                  <th
+                    scope='col'
                     className='px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'
                   >
                     操作
@@ -1749,7 +1789,7 @@ const UserConfig = ({
                     <tbody>
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={9}
                           className='px-6 py-8 text-center text-gray-500 dark:text-gray-400'
                         >
                           加载中...
@@ -1774,7 +1814,7 @@ const UserConfig = ({
                     <tbody>
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={9}
                           className='px-6 py-8 text-center text-gray-500 dark:text-gray-400'
                         >
                           {trimmedUserSearch
@@ -1920,6 +1960,48 @@ const UserConfig = ({
                                 </button>
                               )}
                             </div>
+                          </td>
+                          <td className='px-6 py-4 whitespace-nowrap'>
+                            {user.role === 'owner' ||
+                            user.role === 'admin' ? (
+                              <span className='px-2 py-1 text-xs rounded-full bg-green-100 dark:bg-green-900/20 text-green-800 dark:text-green-300'>
+                                始终允许
+                              </span>
+                            ) : (
+                              <div className='flex items-center space-x-2'>
+                                <span
+                                  className={`px-2 py-1 text-xs rounded-full ${
+                                    user.canViewAdult
+                                      ? 'bg-green-100 dark:bg-green-900/20 text-green-800 dark:text-green-300'
+                                      : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                                  }`}
+                                >
+                                  {user.canViewAdult ? '允许' : '禁止'}
+                                </span>
+                                {canOperate && (
+                                  <button
+                                    onClick={() =>
+                                      handleToggleAdultAccess(
+                                        user.username,
+                                        user.canViewAdult === true
+                                      )
+                                    }
+                                    disabled={isLoading(
+                                      `adultAccess_${user.username}`
+                                    )}
+                                    className={`${buttonStyles.roundedSecondary} ${
+                                      isLoading(
+                                        `adultAccess_${user.username}`
+                                      )
+                                        ? 'opacity-50 cursor-not-allowed'
+                                        : ''
+                                    }`}
+                                  >
+                                    {user.canViewAdult ? '关闭' : '开通'}
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td className='px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2'>
                             {/* 查看设备按钮 */}
@@ -19315,6 +19397,7 @@ function AdminPageClient() {
     banned: boolean;
     tags?: string[];
     enabledApis?: string[];
+    canViewAdult?: boolean;
     created_at: number;
   }> | null>(null);
 

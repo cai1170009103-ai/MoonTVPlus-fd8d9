@@ -32,6 +32,12 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
     return null;
   }
 
+  // 成人权限由服务端注入 window.RUNTIME_CONFIG.ADULT_ENABLED；
+  // 未知时默认展示（站长/老页面），useEffect 里会按实际值纠正。
+  const adultEnabled =
+    typeof window === 'undefined' ||
+    (window as any).RUNTIME_CONFIG?.ADULT_ENABLED !== false;
+
   const [navItems, setNavItems] = useState([
     { icon: Home, label: '首页', href: '/' },
     {
@@ -54,11 +60,15 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
       label: '综艺',
       href: '/douban?type=show',
     },
-    {
-      icon: Flame,
-      label: 'AV',
-      href: '/av',
-    },
+    ...(adultEnabled
+      ? [
+          {
+            icon: Flame,
+            label: 'AV',
+            href: '/av',
+          },
+        ]
+      : []),
       {
         icon: TvMinimalPlay,
         label: '电视直播',
@@ -92,11 +102,16 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
         label: '综艺',
         href: '/douban?type=show',
       },
-      {
-        icon: Flame,
-        label: 'AV',
-        href: '/av',
-      },
+      // 无成人权限时不展示 AV 入口（服务端 /av 路由同样会拦截）
+      ...(runtimeConfig?.ADULT_ENABLED === false
+        ? []
+        : [
+            {
+              icon: Flame,
+              label: 'AV',
+              href: '/av',
+            },
+          ]),
       // 直播源已配置，直接展示入口（不再等 LIVE_ENABLED 开关，
       // 避免配置缓存导致入口时有时无）
       {
