@@ -692,7 +692,24 @@ function DuanjuPlayClient() {
   const seekTargetRef = useRef<{ t: number; until: number } | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const measuredRef = useRef(false);
+  // 自动换源：记录当前集已试过的源，避免在同一集上反复横跳
+  const autoSwitchedRef = useRef<Set<string>>(new Set());
+  // 测速结果与源列表的最新快照：播放失败回调闭包可能滞后，用 ref 读最新值
+  const srcInfoRef = useRef(srcInfo);
+  const sourcesRef = useRef(sources);
   const customAdFilterCodeRef = useRef('');
+
+  // 保持 ref 与最新 state 同步，供失败回调读取
+  useEffect(() => {
+    srcInfoRef.current = srcInfo;
+  }, [srcInfo]);
+  useEffect(() => {
+    sourcesRef.current = sources;
+  }, [sources]);
+  // 换集后允许重新自动换源；同集内换源链不断（navigateTo 不改集数）
+  useEffect(() => {
+    autoSwitchedRef.current = new Set();
+  }, [episodeIndex]);
 
   // 后台配置的自定义去广告代码：取一次，供 hls loader 每次请求读取
   useEffect(() => {
@@ -1274,6 +1291,13 @@ function DuanjuPlayClient() {
     }
   }, [sources, measureSources]);
 
+  // 进页自动测速：不用等用户打开换源抽屉，测速结果用来自动切源
+  useEffect(() => {
+    if (sources.length <= 1 || measuredRef.current) return;
+    measuredRef.current = true;
+    void measureSources(sources);
+  }, [sources, measureSources]);
+
   /* ---------- 收藏 / 清屏 / 倍速 / 去广告 ---------- */
   const toggleFav = useCallback(async () => {
     const d = detailRef.current;
@@ -1383,6 +1407,41 @@ function DuanjuPlayClient() {
       router.push(`/duanju/play?${p.toString()}`);
     },
     [router, saveCurrentProgress]
+  );
+
+  // 当前集彻底播不了（直连和代理都失败）时自动换源：按测速结果挑
+  // 最快的可用源，不用用户一个个手动试；都不可用时才提示换源。
+  const handleSlideFatal = useCallback(
+    (ep: number) => {
+      setVideoLoading(false);
+      // 只有当前正在看的那集失败才自动切源；预加载的上下集失败不处理
+      if (ep !== episodeIndexRef.current) return;
+      const tried = autoSwitchedRef.current;
+      tried.add(`${sourceParam}-${idParam}`);
+      const list = sourcesRef.current;
+      const info = srcInfoRef.current;
+      const pingOf = (s: SearchResult) => {
+        const i = info[`${s.source}-${s.id}`];
+        return i && i.state === 'done' ? i.ping : 99999;
+      };
+      const candidates = list
+        .filter((s) => {
+          const key = `${s.source}-${s.id}`;
+          if (tried.has(key)) return false;
+          const i = info[key];
+          return i?.state === 'done' && (s.episodes?.length || 0) > ep;
+        })
+        .sort((a, b) => pingOf(a) - pingOf(b));
+      if (candidates.length > 0) {
+        const next = candidates[0];
+        tried.add(`${next.source}-${next.id}`);
+        showToast(`当前源无法播放，已自动切换到${next.source_name || next.source}`);
+        navigateTo(next, ep);
+        return;
+      }
+      showToast('播放失败，可尝试换源');
+    },
+    [sourceParam, idParam, showToast, navigateTo]
   );
 
   const backToNormalPlayer = useCallback(() => {
@@ -1690,11 +1749,7 @@ function DuanjuPlayClient() {
                     shouldPlay={ep === episodeIndex || ep === preplay}
                     speed={speed}
                     register={registerVideo}
-                    onFatal={() => {
-                      // 源彻底拉不动了，别再转圈
-                      setVideoLoading(false);
-                      showToast('播放失败，可尝试换源');
-                    }}
+                    onFatal={() => handleSlideFatal(ep)}
                   />
                 </div>
               ))}
