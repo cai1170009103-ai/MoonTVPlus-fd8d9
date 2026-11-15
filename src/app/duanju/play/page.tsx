@@ -24,6 +24,7 @@ import {
 } from '@/lib/db.client';
 import {
   buildEpisodeProgressContentKey,
+  loadAllLocalEpisodeProgressRecords,
   loadLocalEpisodeProgressRecord,
   saveLocalEpisodeProgress,
 } from '@/lib/episode-progress';
@@ -144,6 +145,31 @@ html:has(#djplayer), body:has(#djplayer) { height:100%; overflow:hidden; overscr
 #djplayer.paused .bigplay { opacity:1; transform: scale(1); }
 /* 加载中（未起播）只留转圈：这时 <video> 是 paused 的，不压掉播放键会和转圈叠在一起 */
 #djplayer.loading .bigplay { opacity:0; transform: scale(0.8); }
+
+/* 点一下呼出的快捷控制：左 −10s / 中间暂停 / 右 +10s（层本身不挡手势，只有按钮接点击） */
+#djplayer .tapctl {
+  position:absolute; inset:0; z-index:5; display:grid; grid-template-columns: 1fr auto 1fr;
+  align-items:center; pointer-events:none; opacity:0; transition: opacity .2s;
+}
+#djplayer.showctl .tapctl { opacity:1; }
+#djplayer.showctl .bigplay { opacity:0; transform: scale(0.8); }
+#djplayer .tapctl .cell { display:grid; place-items:center; }
+#djplayer .tapctl .ctlbtn {
+  pointer-events:auto; display:grid; place-items:center; width:58px; height:58px; border-radius:50%;
+  border:1px solid rgba(255,255,255,0.18); background: rgba(0,0,0,0.42); backdrop-filter: blur(4px);
+  color:#fff; cursor:pointer; font-family:inherit;
+}
+#djplayer .tapctl .ctlbtn:active { transform: scale(0.93); }
+#djplayer .tapctl .ctlbtn.main { width:66px; height:66px; }
+#djplayer .tapctl .ctlbtn .s { font-size:15px; font-weight:800; font-variant-numeric: tabular-nums; }
+/* 长按倍速提示 */
+#djplayer .lp2x {
+  position:absolute; top: calc(64px + env(safe-area-inset-top, 0px)); left:50%; transform: translateX(-50%);
+  z-index:8; background: rgba(0,0,0,0.72); color:#fff; font-size:13px; font-weight:800;
+  padding:6px 13px; border-radius:999px; opacity:0; pointer-events:none; transition: opacity .15s;
+  border:1px solid rgba(255,255,255,0.14); font-variant-numeric: tabular-nums; white-space:nowrap;
+}
+#djplayer .lp2x.on { opacity:1; }
 
 /* 底部信息 + 进度 */
 #djplayer .bottom {
@@ -293,6 +319,7 @@ html:has(#djplayer), body:has(#djplayer) { height:100%; overflow:hidden; overscr
 /* 选集网格 */
 #djplayer .epgrid { display:grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap:8px; }
 #djplayer .epcell {
+  position:relative; overflow:hidden;
   aspect-ratio:1; border-radius:10px; border:1px solid var(--line); background: var(--surface-2);
   color: var(--fg); font-family:inherit; font-size:13px; font-weight:700;
   font-variant-numeric: tabular-nums; cursor:pointer; display:grid; place-items:center;
@@ -300,6 +327,10 @@ html:has(#djplayer), body:has(#djplayer) { height:100%; overflow:hidden; overscr
 #djplayer .epcell:hover { border-color: var(--accent); }
 #djplayer .epcell.cur { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 #djplayer .epcell.watched { color: var(--muted); }
+#djplayer .epcell .pbar { position:absolute; left:0; bottom:0; height:3px; background: var(--accent); }
+#djplayer .epcell .done {
+  position:absolute; top:2px; right:5px; font-size:10px; font-weight:900; color: var(--accent-2);
+}
 
 /* 换源列表 */
 #djplayer .srcrow {
@@ -413,6 +444,20 @@ function qualityLabel(q: string): string {
   return 'q-low';
 }
 
+/* 画质：'auto' 走 hls 自适应；数字是 hls levels 下标，越界时回落到自动。 */
+function applyHlsQuality(hls: any, quality: number | 'auto') {
+  try {
+    if (!hls || !hls.levels || hls.levels.length === 0) return;
+    if (quality === 'auto' || quality < 0 || quality >= hls.levels.length) {
+      hls.nextLevel = -1;
+    } else {
+      hls.nextLevel = quality;
+    }
+  } catch {
+    /* noop */
+  }
+}
+
 /* 停在结尾附近的都当作「这集看完了」→ 从头开始，其余回到上次的位置。
    阈值不能只留几秒：手动划走时往往停在离结尾十几秒的地方，续播过去播一会儿
    就 ended、又自动跳到下一集（用户报过「切回上一集又跳走」）。
@@ -451,8 +496,10 @@ function EpisodeSlide({
   customCodeRef,
   shouldPlay,
   speed,
+  quality,
   register,
   onFatal,
+  onLevels,
 }: {
   ep: number;
   url: string;
@@ -462,13 +509,19 @@ function EpisodeSlide({
   customCodeRef: React.MutableRefObject<string>;
   shouldPlay: boolean;
   speed: number;
+  quality: number | 'auto';
   register: (ep: number, el: HTMLVideoElement | null) => void;
   onFatal: () => void;
+  onLevels: (ep: number, levels: { height: number; bitrate: number }[]) => void;
 }) {
   const ref = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<any>(null);
   const playRef = useRef(shouldPlay);
   playRef.current = shouldPlay;
+  const qualityRef = useRef(quality);
+  useEffect(() => {
+    qualityRef.current = quality;
+  }, [quality]);
   const triedProxyRef = useRef(false);
   const [activeUrl, setActiveUrl] = useState(url);
 
@@ -521,6 +574,18 @@ function EpisodeSlide({
             if (data?.fatal && !handleFatal()) onFatal();
           });
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            try {
+              onLevels(
+                ep,
+                (hls.levels || []).map((l: any) => ({
+                  height: l.height || 0,
+                  bitrate: l.bitrate || 0,
+                }))
+              );
+            } catch {
+              /* noop */
+            }
+            applyHlsQuality(hls, qualityRef.current);
             if (playRef.current) video.play().catch(() => {});
           });
           hls.loadSource(activeUrl);
@@ -551,6 +616,28 @@ function EpisodeSlide({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeUrl, adFilter, source, proxyUrl]);
+
+  // 画质切换：用户改画质时应用到当前 hls 实例
+  useEffect(() => {
+    if (hlsRef.current) applyHlsQuality(hlsRef.current, quality);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quality]);
+
+  // 滑入成当前集时上报一次清晰度（预播时解析的 manifest 不会再触发）
+  useEffect(() => {
+    if (!shouldPlay) return;
+    const hls = hlsRef.current;
+    if (!hls || !hls.levels || hls.levels.length === 0) return;
+    try {
+      onLevels(
+        ep,
+        hls.levels.map((l: any) => ({ height: l.height || 0, bitrate: l.bitrate || 0 }))
+      );
+    } catch {
+      /* noop */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldPlay]);
 
   // 起播/暂停 + 倍速
   useEffect(() => {
@@ -621,6 +708,26 @@ function DuanjuPlayClient() {
   const [favPop, setFavPop] = useState(false);
   const [clean, setClean] = useState(false);
   const [speed, setSpeed] = useState(1);
+  // 点一下呼出的快捷控制（中间暂停/播放 + 左右 ±10 秒）
+  const [controlsVisible, setControlsVisible] = useState(false);
+  // 长按倍速
+  const [longPress2x, setLongPress2x] = useState(false);
+  // 画质：'auto' 或 hls level 下标，存 localStorage 下次沿用
+  const [quality, setQuality] = useState<number | 'auto'>(() => {
+    if (typeof window === 'undefined') return 'auto';
+    const v = localStorage.getItem('dj_quality');
+    if (v === null || v === 'auto') return 'auto';
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 'auto';
+  });
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const [curLevels, setCurLevels] = useState<{ height: number; bitrate: number }[]>([]);
+  // 画中画
+  const [pipActive, setPipActive] = useState(false);
+  // 选集抽屉里的真实分集进度（集号 → playTime/totalTime）
+  const [epProgress, setEpProgress] = useState<
+    Record<string, { playTime: number; totalTime: number }>
+  >({});
   // 去广告：跟 play 页的「去广告」设置共用同一个键（localStorage: enable_blockad，默认开）。
   // 不是本页私有的开关，两页改一处另一处跟着变。
   const [adFilter, setAdFilter] = useState<boolean>(() => {
@@ -635,6 +742,11 @@ function DuanjuPlayClient() {
       localStorage.setItem('enable_blockad', String(adFilter));
     }
   }, [adFilter]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('dj_quality', String(quality));
+    }
+  }, [quality]);
   const [expanded, setExpanded] = useState(false);
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -681,6 +793,11 @@ function DuanjuPlayClient() {
   });
   const seekRef = useRef<HTMLDivElement | null>(null);
   const seekHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevSpeedRef = useRef(1);
+  const longPressActiveRef = useRef(false);
+  const levelsMapRef = useRef<Record<number, { height: number; bitrate: number }[]>>({});
 
   const detailRef = useRef<SearchResult | null>(null);
   const episodeIndexRef = useRef(0);
@@ -961,6 +1078,8 @@ function DuanjuPlayClient() {
       const to = Math.max(0, Math.min(total - 1, next));
       if (to === from) return;
       setDrawer('');
+      hideControls();
+      setCurLevels([]);
 
       const key = buildEpisodeProgressContentKey({
         doubanId: d.douban_id,
@@ -1122,6 +1241,8 @@ function DuanjuPlayClient() {
         setPlaying(false);
       }
     };
+    const onEnterPip = () => setPipActive(true);
+    const onLeavePip = () => setPipActive(false);
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('loadedmetadata', onMeta);
     v.addEventListener('resize', syncAr);
@@ -1132,6 +1253,8 @@ function DuanjuPlayClient() {
     v.addEventListener('playing', onReady);
     v.addEventListener('canplay', onReady);
     v.addEventListener('error', onReady);
+    v.addEventListener('enterpictureinpicture', onEnterPip);
+    v.addEventListener('leavepictureinpicture', onLeavePip);
     setTime(seekTargetRef.current?.t ?? v.currentTime ?? 0);
     setDuration(v.duration || 0);
     setPlaying(!v.paused);
@@ -1148,6 +1271,8 @@ function DuanjuPlayClient() {
       v.removeEventListener('playing', onReady);
       v.removeEventListener('canplay', onReady);
       v.removeEventListener('error', onReady);
+      v.removeEventListener('enterpictureinpicture', onEnterPip);
+      v.removeEventListener('leavepictureinpicture', onLeavePip);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episodeIndex, videoTick]);
@@ -1389,6 +1514,124 @@ function DuanjuPlayClient() {
     else v.pause();
   }, []);
 
+  /* ---------- 点一下呼出的快捷控制 ---------- */
+  const armControlsTimer = useCallback(() => {
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = null;
+    if (!playing) return;
+    controlsTimerRef.current = setTimeout(() => setControlsVisible(false), 3200);
+  }, [playing]);
+  const showControls = useCallback(() => {
+    setMenuOpen(false);
+    setControlsVisible(true);
+  }, []);
+  const hideControls = useCallback(() => {
+    if (controlsTimerRef.current) {
+      clearTimeout(controlsTimerRef.current);
+      controlsTimerRef.current = null;
+    }
+    setControlsVisible(false);
+  }, []);
+  // 播放中 3.2 秒后自动收起；暂停时一直留着
+  useEffect(() => {
+    if (!controlsVisible) return;
+    armControlsTimer();
+    return () => {
+      if (controlsTimerRef.current) {
+        clearTimeout(controlsTimerRef.current);
+        controlsTimerRef.current = null;
+      }
+    };
+  }, [controlsVisible, armControlsTimer]);
+
+  /* ---------- 长按倍速 ---------- */
+  const endLongPress2x = useCallback(() => {
+    if (!longPressActiveRef.current) return;
+    longPressActiveRef.current = false;
+    setLongPress2x(false);
+    applySpeed(prevSpeedRef.current);
+  }, [applySpeed]);
+
+  /* ---------- ±10 秒 ---------- */
+  const seekBy = useCallback(
+    (delta: number) => {
+      const v = videoRefs.current[episodeIndexRef.current];
+      if (!v) return;
+      const total = v.duration || 0;
+      if (!Number.isFinite(total) || total <= 0) return;
+      const t = Math.max(0, Math.min(total, (v.currentTime || 0) + delta));
+      try {
+        v.currentTime = t;
+      } catch {
+        /* noop */
+      }
+      commitSeek(t);
+      setControlsVisible(true);
+      armControlsTimer();
+    },
+    [commitSeek, armControlsTimer]
+  );
+
+  /* ---------- 画中画 ---------- */
+  const togglePip = useCallback(async () => {
+    setMenuOpen(false);
+    const v = videoRefs.current[episodeIndexRef.current];
+    if (!v) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+        return;
+      }
+      if (v.paused) {
+        try {
+          await v.play();
+        } catch {
+          /* noop */
+        }
+      }
+      const anyV = v as unknown as {
+        requestPictureInPicture?: () => Promise<void>;
+        webkitSetPresentationMode?: (mode: string) => void;
+      };
+      if (typeof v.requestPictureInPicture === 'function') {
+        await v.requestPictureInPicture();
+      } else if (typeof anyV.webkitSetPresentationMode === 'function') {
+        anyV.webkitSetPresentationMode('picture-in-picture');
+      } else {
+        showToast('当前设备不支持画中画');
+      }
+    } catch {
+      showToast('画中画打开失败');
+    }
+  }, [showToast]);
+
+  /* ---------- 画质清晰度上报 ---------- */
+  const handleLevels = useCallback(
+    (ep: number, levels: { height: number; bitrate: number }[]) => {
+      levelsMapRef.current[ep] = levels;
+      if (ep === episodeIndexRef.current) setCurLevels(levels);
+    },
+    []
+  );
+  // 切集后从已上报的表里取当前集的清晰度（滑入集在预播时已上报）
+  useEffect(() => {
+    setCurLevels(levelsMapRef.current[episodeIndex] || []);
+  }, [episodeIndex]);
+
+  /* ---------- 选集抽屉：打开就定位到当前集那一页，并读真实分集进度 ---------- */
+  const openEpDrawer = useCallback(() => {
+    setEpPage(Math.floor(episodeIndexRef.current / EP_PER_PAGE));
+    if (progressKey) {
+      const recs = loadAllLocalEpisodeProgressRecords(progressKey);
+      const map: Record<string, { playTime: number; totalTime: number }> = {};
+      for (const [k, r] of Object.entries(recs)) {
+        map[k] = { playTime: r.playTime || 0, totalTime: r.totalTime || 0 };
+      }
+      setEpProgress(map);
+    }
+    setDrawer('ep');
+  }, [progressKey]);
+
   /* ---------- 导航 ---------- */
   const goBack = useCallback(() => {
     saveCurrentProgress();
@@ -1400,6 +1643,7 @@ function DuanjuPlayClient() {
     (s: SearchResult, episodeIdx?: number) => {
       saveCurrentProgress();
       setDrawer('');
+      hideControls();
       const p = new URLSearchParams({ source: s.source, id: s.id, title: s.title });
       const y = s.year || '';
       if (y) p.set('year', y);
@@ -1563,20 +1807,33 @@ function DuanjuPlayClient() {
   );
 
   /* ---------- 手势：手指拖动跟着走，松手越过阈值就滑到相邻集 ---------- */
-  const onTouchDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const t = e.target as HTMLElement;
-    if (t.closest('.seek, .menu')) return;
-    dragRef.current = {
-      active: true,
-      startY: e.clientY,
-      moved: false,
-      skip: !!t.closest('.rail, .bottom, .top, .menu, .seek, .drawer'),
-    };
+  const onTouchDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('.seek, .menu, .tapctl')) return;
+      dragRef.current = {
+        active: true,
+        startY: e.clientY,
+        moved: false,
+        skip: !!t.closest('.rail, .bottom, .top, .menu, .seek, .drawer, .tapctl'),
+      };
+      // 长按倍速：按住不动 450ms 后提到 2x，松手恢复（只在播放中）
+      if (!dragRef.current.skip && playing) {
+        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+        const speedBefore = speed;
+        longPressTimerRef.current = setTimeout(() => {
+          if (!dragRef.current.active || dragRef.current.moved) return;
+          longPressActiveRef.current = true;
+          prevSpeedRef.current = speedBefore;
+          applySpeed(2);
+          setLongPress2x(true);
+        }, 450);
+      }
     // 这里**不能** setPointerCapture：鼠标按下就捕获的话，pointerup 被改派到
     // touchguard，click 会落到 mousedown/up 的公共祖先（也就是 touchguard）上，
     // 按钮自己的 onClick 永远收不到——PC 上整个页面的按钮全点不动（触屏是浏览器
     // 另外合成的 click，所以只有 PC 中招）。等真的拖起来了再捕获。
-  }, []);
+  }, [applySpeed, playing, speed]);
 
   const onTouchMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1584,6 +1841,14 @@ function DuanjuPlayClient() {
       if (!d.active) return;
       const dy = e.clientY - d.startY;
       if (Math.abs(dy) > 6) d.moved = true;
+      // 一动就取消长按倍速（已经在 2x 的松手恢复）
+      if (d.moved) {
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        if (longPressActiveRef.current) endLongPress2x();
+      }
       // 开始拖了才捕获指针：拖出元素范围也能继续跟手
       if (d.moved) {
         try {
@@ -1599,18 +1864,35 @@ function DuanjuPlayClient() {
       const atEdge = (dy < 0 && idx >= total - 1) || (dy > 0 && idx <= 0);
       setTrack(idx, atEdge ? dy * 0.28 : dy, false);
     },
-    [setTrack]
+    [setTrack, endLongPress2x]
   );
 
   const onTouchCancel = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (longPressActiveRef.current) endLongPress2x();
     const d = dragRef.current;
     if (!d.active) return;
     d.active = false;
     setTrack(episodeIndexRef.current, 0, true);
-  }, [setTrack]);
+  }, [setTrack, endLongPress2x]);
 
   const onTouchUp = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      // 长按倍速刚结束：这次抬手不触发点按逻辑
+      if (longPressActiveRef.current) {
+        endLongPress2x();
+        const d0 = dragRef.current;
+        d0.active = false;
+        setTrack(episodeIndexRef.current, 0, true);
+        return;
+      }
       const d = dragRef.current;
       if (!d.active) return;
       d.active = false;
@@ -1626,11 +1908,13 @@ function DuanjuPlayClient() {
       }
       setTrack(idx, 0, true);
       if (!d.moved && !d.skip) {
+        // 点一下：呼出/收起快捷控制（中间暂停键 + 左右 ±10 秒），不直接暂停
         setMenuOpen(false);
-        togglePlay();
+        if (controlsVisible) hideControls();
+        else showControls();
       }
     },
-    [goEpisode, setTrack, togglePlay]
+    [goEpisode, setTrack, controlsVisible, showControls, hideControls, endLongPress2x]
   );
 
   useEffect(() => {
@@ -1690,6 +1974,14 @@ function DuanjuPlayClient() {
     }
     return arr;
   }, [pageStart, pageEnd, epDesc]);
+  // 已看完（看到 90% 以上）的集数
+  const watchedCount = useMemo(() => {
+    let c = 0;
+    for (const r of Object.values(epProgress)) {
+      if (r.totalTime > 0 && r.playTime / r.totalTime >= 0.9) c += 1;
+    }
+    return c;
+  }, [epProgress]);
 
   const currentKey = `${sourceParam}-${idParam}`;
 
@@ -1716,7 +2008,7 @@ function DuanjuPlayClient() {
   return (
     <div
       id='djplayer'
-      className={`${clean ? 'clean' : ''} ${playing ? '' : 'paused'} ${loading || videoLoading ? 'loading' : ''}${videoWide ? ' fit' : ''}`}
+      className={`${clean ? 'clean' : ''} ${playing ? '' : 'paused'} ${loading || videoLoading ? 'loading' : ''}${videoWide ? ' fit' : ''}${controlsVisible ? ' showctl' : ''}`}
       style={{ '--col-num': String(frameNum) } as React.CSSProperties}
     >
       <style dangerouslySetInnerHTML={{ __html: LOCAL_CSS }} />
@@ -1748,8 +2040,10 @@ function DuanjuPlayClient() {
                     customCodeRef={customAdFilterCodeRef}
                     shouldPlay={ep === episodeIndex || ep === preplay}
                     speed={speed}
+                    quality={quality}
                     register={registerVideo}
                     onFatal={() => handleSlideFatal(ep)}
+                    onLevels={handleLevels}
                   />
                 </div>
               ))}
@@ -1780,6 +2074,7 @@ function DuanjuPlayClient() {
               e.stopPropagation();
               setMenuOpen((v) => !v);
               setSpeedsOpen(false);
+              setQualityOpen(false);
             }}
           >
             <svg width='18' height='18' viewBox='0 0 24 24' fill='currentColor'>
@@ -1803,6 +2098,42 @@ function DuanjuPlayClient() {
               </button>
             ))}
           </div>
+          <button className='mrow' role='menuitem' onClick={() => setQualityOpen((v) => !v)}>
+            <span>画质</span>
+            <span className='val'>
+              {quality === 'auto'
+                ? '自动'
+                : curLevels[quality]?.height
+                  ? `${curLevels[quality].height}p`
+                  : '自动'}
+            </span>
+          </button>
+          <div className={`speeds ${qualityOpen ? 'on' : ''}`}>
+            <button
+              className={quality === 'auto' ? 'cur' : ''}
+              onClick={() => setQuality('auto')}
+            >
+              自动
+            </button>
+            {curLevels.length === 0 && (
+              <button disabled style={{ opacity: 0.55 }}>
+                当前源无多清晰度
+              </button>
+            )}
+            {curLevels
+              .map((lv, i) => ({ ...lv, i }))
+              .sort((a, b) => b.height - a.height)
+              .map((lv) => (
+                <button
+                  key={lv.i}
+                  className={quality === lv.i ? 'cur' : ''}
+                  onClick={() => setQuality(lv.i)}
+                >
+                  {lv.height ? `${lv.height}p` : '未知'}
+                  {lv.bitrate ? ` · ${(lv.bitrate / 1000000).toFixed(1)}M` : ''}
+                </button>
+              ))}
+          </div>
           <button
             className='mrow'
             role='menuitem'
@@ -1824,6 +2155,10 @@ function DuanjuPlayClient() {
           >
             <span>去广告</span>
             <span className={`sw ${adFilter ? 'on' : ''}`} />
+          </button>
+          <button className='mrow' role='menuitem' onClick={togglePip}>
+            <span>画中画</span>
+            <span className='val'>{pipActive ? '已开启' : '未开启'}</span>
           </button>
           <div className='mdiv' />
           <button
@@ -1848,6 +2183,41 @@ function DuanjuPlayClient() {
             </svg>
           </div>
         </div>
+
+        {/* 点一下呼出的快捷控制：左 −10s / 中间暂停 / 右 +10s */}
+        <div className='tapctl' aria-hidden={!controlsVisible}>
+          <div className='cell'>
+            <button className='ctlbtn' aria-label='快退 10 秒' onClick={() => seekBy(-10)}>
+              <span className='s'>−10s</span>
+            </button>
+          </div>
+          <div className='cell'>
+            <button
+              className='ctlbtn main'
+              aria-label={playing ? '暂停' : '播放'}
+              onClick={() => togglePlay()}
+            >
+              {playing ? (
+                <svg width='28' height='28' viewBox='0 0 24 24' fill='currentColor'>
+                  <rect x='6' y='5' width='4' height='14' rx='1' />
+                  <rect x='14' y='5' width='4' height='14' rx='1' />
+                </svg>
+              ) : (
+                <svg width='28' height='28' viewBox='0 0 24 24' fill='currentColor'>
+                  <path d='M8 5v14l11-7z' />
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className='cell'>
+            <button className='ctlbtn' aria-label='快进 10 秒' onClick={() => seekBy(10)}>
+              <span className='s'>+10s</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 长按倍速提示 */}
+        <div className={`lp2x ${longPress2x ? 'on' : ''}`}>2.0x 快进中</div>
 
         {/* 右侧操作列：收藏 + 换源 */}
         <div className='rail'>
@@ -1920,7 +2290,7 @@ function DuanjuPlayClient() {
           </div>
 
           <div className='epblock'>
-            <button className='eplab' aria-label='选集' onClick={() => setDrawer('ep')}>
+            <button className='eplab' aria-label='选集' onClick={openEpDrawer}>
               <span className='ep'>
                 第 <em>{epNo}</em> 集 / 共 <em>{total}</em> 集
               </span>
@@ -1978,7 +2348,9 @@ function DuanjuPlayClient() {
         <div className='grab' />
         <div className='dhead'>
           <span className='dtitle'>选集</span>
-          <span className='dsub'>共 {total} 集</span>
+          <span className='dsub'>
+            共 {total} 集{watchedCount > 0 ? ` · 已看 ${watchedCount} 集` : ''}
+          </span>
           <button className='dclose' aria-label='关闭' onClick={() => setDrawer('')}>
             <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round'>
               <path d='M6 6l12 12M18 6L6 18' />
@@ -2009,15 +2381,25 @@ function DuanjuPlayClient() {
             </button>
           </div>
           <div className='epgrid'>
-            {gridEpisodes.map((n) => (
-              <button
-                key={n}
-                className={`epcell ${n === epNo ? 'cur' : ''} ${n < epNo ? 'watched' : ''}`}
-                onClick={() => goEpisode(n - 1)}
-              >
-                {n}
-              </button>
-            ))}
+            {gridEpisodes.map((n) => {
+              const rec = epProgress[String(n - 1)];
+              const frac =
+                rec && rec.totalTime > 0 ? Math.min(1, rec.playTime / rec.totalTime) : 0;
+              const done = frac >= 0.9;
+              return (
+                <button
+                  key={n}
+                  className={`epcell ${n === epNo ? 'cur' : ''} ${frac > 0 && !done ? 'watched' : ''} ${done ? 'done' : ''}`}
+                  onClick={() => goEpisode(n - 1)}
+                >
+                  {n}
+                  {frac > 0 && !done && (
+                    <i className='pbar' style={{ width: `${Math.round(frac * 100)}%` }} />
+                  )}
+                  {done && <span className='done'>✓</span>}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
