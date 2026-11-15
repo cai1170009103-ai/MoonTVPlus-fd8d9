@@ -3,7 +3,7 @@
 import { API_CONFIG, getAvailableApiSites } from '@/lib/config';
 import { db } from '@/lib/db';
 import { parseJsonLosslessIntegers } from '@/lib/json';
-import { isDuanjuTypeName } from '@/lib/duanju.client';
+import { isAiDuanjuTypeName, isDuanjuTypeName } from '@/lib/duanju.client';
 
 export { isDuanjuTypeName };
 
@@ -20,6 +20,9 @@ export interface DuanjuSource {
   api: string;
   typeId?: string;
   typeName?: string;
+  // AI 短剧分类（源站有「AI漫剧」类时才有，如量子 52；没有时为 null）
+  aiTypeId?: string | null;
+  aiTypeName?: string | null;
 }
 
 /**
@@ -36,7 +39,9 @@ export async function getDuanjuSources(): Promise<DuanjuSource[]> {
       // 旧版本缓存只保存采集源，不包含短剧分类 ID。缺少 typeId 时自动重建缓存。
       if (
         cachedSources.length === 0 ||
-        cachedSources.every((source) => source.typeId)
+        cachedSources.every(
+          (source) => source.typeId && 'aiTypeId' in source
+        )
       ) {
         return cachedSources;
       }
@@ -77,6 +82,10 @@ export async function getDuanjuSources(): Promise<DuanjuSource[]> {
             isDuanjuTypeName(item.type_name || '')
           );
 
+          const aiType = data.class.find((item) =>
+            isAiDuanjuTypeName(item.type_name || '')
+          );
+
           if (duanjuType) {
             return {
               key: source.key,
@@ -84,6 +93,8 @@ export async function getDuanjuSources(): Promise<DuanjuSource[]> {
               api: source.api,
               typeId: duanjuType.type_id.toString(),
               typeName: duanjuType.type_name,
+              aiTypeId: aiType ? aiType.type_id.toString() : null,
+              aiTypeName: aiType ? aiType.type_name : null,
             };
           }
         }

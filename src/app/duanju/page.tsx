@@ -31,7 +31,12 @@ interface DuanjuSource {
   api: string;
   typeId?: string;
   typeName?: string;
+  aiTypeId?: string | null;
+  aiTypeName?: string | null;
 }
+
+// 短剧类型：全部 / 真人短剧 / AI短剧
+type DuanjuMode = 'all' | 'real' | 'ai';
 
 // 观影前保存的浏览快照，返回后恢复到上一步操作位置
 const DUANJU_STATE_KEY = 'duanju_state';
@@ -39,6 +44,7 @@ const DUANJU_STATE_KEY = 'duanju_state';
 interface DuanjuSnapshot {
   sources: DuanjuSource[];
   selectedSource: string;
+  mode: DuanjuMode;
   categories: CategoryNode[];
   selectedParentCategory: string;
   selectedCategory: string;
@@ -87,6 +93,7 @@ const consumeSnapshot = (): DuanjuSnapshot | null => {
 function DuanjuPageClient() {
   const [sources, setSources] = useState<DuanjuSource[]>([]);
   const [selectedSource, setSelectedSource] = useState('');
+  const [mode, setMode] = useState<DuanjuMode>('all');
   const [categories, setCategories] = useState<CategoryNode[]>([]);
   const [selectedParentCategory, setSelectedParentCategory] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -120,6 +127,7 @@ function DuanjuPageClient() {
       pendingScrollTopRef.current = snapshot.scrollTop;
       setSources(snapshot.sources);
       setSelectedSource(snapshot.selectedSource);
+      setMode(snapshot.mode || 'all');
       setCategories(snapshot.categories);
       // 旧快照没有一级分类时，从已选分类反推
       setSelectedParentCategory(
@@ -152,6 +160,7 @@ function DuanjuPageClient() {
     snapshotRef.current = {
       sources,
       selectedSource,
+      mode,
       categories,
       selectedParentCategory,
       selectedCategory,
@@ -164,6 +173,7 @@ function DuanjuPageClient() {
   }, [
     sources,
     selectedSource,
+    mode,
     categories,
     selectedParentCategory,
     selectedCategory,
@@ -218,12 +228,14 @@ function DuanjuPageClient() {
     fetchSources();
   }, [restoreChecked]);
 
-  // 热门短剧：每次进页都重新拉取（服务端缓存 5 分钟），保证榜单常新
+  // 热门短剧：每次进页、切换类型都重新拉取（服务端缓存 5 分钟），保证榜单常新
   useEffect(() => {
     const fetchHot = async () => {
       setIsLoadingHot(true);
       try {
-        const response = await fetch('/api/duanju/recommends');
+        const response = await fetch(
+          `/api/duanju/recommends?mode=${mode === 'ai' ? 'ai' : 'real'}`
+        );
         const data = await response.json();
         if (data.code === 200 && Array.isArray(data.data)) {
           setHotDuanju(data.data as SearchResult[]);
@@ -235,18 +247,50 @@ function DuanjuPageClient() {
       }
     };
     fetchHot();
-  }, []);
+  }, [mode]);
 
   const handleSourceChange = (sourceKey: string) => {
     const source = sources.find((item) => item.key === sourceKey);
     setSelectedSource(sourceKey);
     setCategories([]);
     setSelectedParentCategory('');
-    // 先用采集源标记的短剧分类直接拉列表，分类加载后再细化选择
-    setSelectedCategory(source?.typeId || '');
+    // 先用采集源标记的分类直接拉列表，分类加载后再细化选择
+    // AI 模式用该源的 AI 分类，其余模式用短剧分类
+    setSelectedCategory(
+      mode === 'ai' ? source?.aiTypeId || '' : source?.typeId || ''
+    );
     setCurrentPage(1);
     setVideos([]);
     setHasMore(true);
+  };
+
+  // 切换类型（全部 / 真人短剧 / AI短剧）：热门榜与列表都跟着换
+  const handleModeChange = (value: string) => {
+    const next = value as DuanjuMode;
+    if (next === mode) return;
+    setMode(next);
+    setCurrentPage(1);
+    setVideos([]);
+    setHasMore(true);
+    // 先直接切到对应分类，分类加载完成后再确认一次；
+    // AI 模式下当前源没有 AI 分类时，换到第一个有 AI 分类的源
+    const current = sources.find((item) => item.key === selectedSource);
+    if (next === 'ai') {
+      const target = current?.aiTypeId
+        ? current
+        : sources.find((item) => item.aiTypeId);
+      if (target) {
+        if (target.key !== selectedSource) setSelectedSource(target.key);
+        setSelectedParentCategory('');
+        setSelectedCategory(target.aiTypeId || '');
+      } else {
+        setSelectedParentCategory('');
+        setSelectedCategory('');
+      }
+    } else {
+      setSelectedParentCategory('');
+      setSelectedCategory(current?.typeId || '');
+    }
   };
 
   // 当选择的源变化时，加载该源的短剧分类（含二级分类）
@@ -268,6 +312,13 @@ function DuanjuPageClient() {
         if (data.code === 200 && Array.isArray(data.data)) {
           const list = data.data as CategoryNode[];
           setCategories(list);
+          // AI 模式：分类接口不返回 AI 分类，直接用源标记的 AI 分类
+          if (mode === 'ai') {
+            const source = sources.find((item) => item.key === selectedSource);
+            setSelectedParentCategory('');
+            setSelectedCategory(source?.aiTypeId || '');
+            return;
+          }
           if (list.length === 0) {
             setSelectedParentCategory('');
             setSelectedCategory('');
@@ -306,17 +357,19 @@ function DuanjuPageClient() {
         }
       } catch (error) {
         console.error('Failed to load duanju categories:', error);
-        // 分类加载失败时回退到采集源标记的短剧分类，保证列表可用
+        // 分类加载失败时回退到采集源标记的分类，保证列表可用
         const source = sources.find((item) => item.key === selectedSource);
-        if (source?.typeId) {
+        const fallback =
+          mode === 'ai' ? source?.aiTypeId : source?.typeId;
+        if (fallback) {
           setSelectedParentCategory('');
-          setSelectedCategory(source.typeId);
+          setSelectedCategory(fallback);
         }
       }
     };
 
     fetchCategories();
-  }, [restoreChecked, selectedSource]);
+  }, [restoreChecked, selectedSource, mode]);
 
   // 切换一级分类（类型）时，落到该类型下第一个子分类并重置到第一页
   const handleParentCategoryChange = (value: string) => {
@@ -355,6 +408,10 @@ function DuanjuPageClient() {
           ...getChildCategories(categories, parentCategories[0].id),
         ]
       : categories;
+
+  // AI 模式下只列出有 AI 分类的采集源（非凡等没有 AI 分类）
+  const visibleSources =
+    mode === 'ai' ? sources.filter((item) => item.aiTypeId) : sources;
 
   // 当选择的分类或页码变化时，加载视频列表
   useEffect(() => {
@@ -462,12 +519,32 @@ function DuanjuPageClient() {
           </Link>
         </div>
 
+        {/* 类型：全部 / 真人短剧 / AI短剧 */}
+        <div className='max-w-4xl mx-auto mb-6'>
+          <div className='flex px-4'>
+            <CapsuleSwitch
+              options={[
+                { label: '全部短剧', value: 'all' },
+                { label: '真人短剧', value: 'real' },
+                { label: 'AI短剧', value: 'ai' },
+              ]}
+              active={mode}
+              onChange={handleModeChange}
+            />
+          </div>
+        </div>
+
         {/* 热门短剧：每次进页重新拉取，横向滑动，点进直接竖屏播放 */}
         {(isLoadingHot || hotDuanju.length > 0) && (
           <div className='max-w-[95%] mx-auto mb-8'>
             <div className='mb-3 flex items-center gap-2'>
               <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
-                🔥 热门短剧
+                🔥{' '}
+                {mode === 'ai'
+                  ? '热门 AI 短剧'
+                  : mode === 'real'
+                    ? '热门真人短剧'
+                    : '热门短剧'}
               </h2>
               <span className='text-xs text-gray-500 dark:text-gray-400'>
                 实时更新
@@ -524,10 +601,12 @@ function DuanjuPageClient() {
                   加载采集源中...
                 </span>
               </div>
-            ) : sources.length === 0 ? (
+            ) : visibleSources.length === 0 ? (
               <div className='flex items-center justify-center h-12 bg-gray-50/80 rounded-lg border border-gray-200/50 dark:bg-gray-800 dark:border-gray-700'>
                 <span className='text-sm text-gray-500 dark:text-gray-400'>
-                  暂无包含短剧分类的采集源
+                  {mode === 'ai'
+                    ? '暂无包含 AI 短剧的采集源'
+                    : '暂无包含短剧分类的采集源'}
                 </span>
               </div>
             ) : (
@@ -564,7 +643,7 @@ function DuanjuPageClient() {
                   }}
                 >
                   <div className='flex gap-2 px-4 min-w-min'>
-                    {sources.map((source) => (
+                    {visibleSources.map((source) => (
                       <button
                         key={source.key}
                         onClick={() => handleSourceChange(source.key)}
@@ -584,8 +663,8 @@ function DuanjuPageClient() {
           </div>
         </div>
 
-        {/* 分类选择：源有二级分类时联动展示 */}
-        {selectedSource && categories.length > 1 && (
+        {/* 分类选择：源有二级分类时联动展示（AI 模式只有一个 AI 分类，不显示） */}
+        {selectedSource && categories.length > 1 && mode !== 'ai' && (
           <div className='max-w-4xl mx-auto mb-8'>
             {isMultiParent ? (
               <>
@@ -642,7 +721,7 @@ function DuanjuPageClient() {
 
         {selectedSource && !selectedCategory && (
           <div className='text-center text-gray-500 py-8 dark:text-gray-400'>
-            当前采集源暂无短剧分类
+            {mode === 'ai' ? '当前采集源暂无 AI 短剧' : '当前采集源暂无短剧分类'}
           </div>
         )}
 
@@ -650,7 +729,11 @@ function DuanjuPageClient() {
           <div className='max-w-[95%] mx-auto mt-8'>
             <div className='mb-4'>
               <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
-                短剧列表
+                {mode === 'ai'
+                  ? 'AI短剧列表'
+                  : mode === 'real'
+                    ? '真人短剧列表'
+                    : '短剧列表'}
               </h2>
             </div>
 

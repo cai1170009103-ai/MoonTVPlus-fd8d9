@@ -4,6 +4,18 @@
    NEXT_PUBLIC_STORAGE_TYPE=d1 下会直接抛 "D1Storage can only be used on the server side"，
    把引用它的页面整页打挂。 */
 
+/* AI 短剧分类名判断：源站把 AI 生成的漫剧单独成类（如「AI漫剧」），
+   与真人短剧分属不同分类，靠分类名区分。 */
+export function isAiDuanjuTypeName(typeName: string): boolean {
+  const normalizedTypeName = typeName.toLowerCase();
+  return (
+    normalizedTypeName.includes('ai') &&
+    (normalizedTypeName.includes('漫剧') ||
+      normalizedTypeName.includes('短剧') ||
+      normalizedTypeName.includes('动漫'))
+  );
+}
+
 export function isDuanjuTypeName(typeName: string): boolean {
   const normalizedTypeName = typeName.toLowerCase();
   return (

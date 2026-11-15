@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,no-console */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { API_CONFIG } from '@/lib/config';
 import { getDuanjuSources } from '@/lib/duanju';
@@ -10,11 +10,11 @@ import { cleanHtmlTags } from '@/lib/utils';
 
 export const runtime = 'nodejs';
 
-// 服务端内存缓存
-let cachedRecommends: {
-  timestamp: number;
-  data: SearchResult[];
-} | null = null;
+// 服务端内存缓存：按类型分开存（真人 / AI），各 5 分钟
+let cachedRecommends: Record<
+  string,
+  { timestamp: number; data: SearchResult[] }
+> = {};
 
 interface ApiSearchItem {
   vod_id: string | number;
@@ -55,20 +55,24 @@ const fetchVideoList = async (api: string, typeId: string | number) => {
 /**
  * 获取热播短剧推荐视频
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const { searchParams } = new URL(request.url);
+    const mode = searchParams.get('mode') === 'ai' ? 'ai' : 'real';
+
     // 检查内存缓存
     const now = Date.now();
     const CACHE_DURATION = 5 * 60 * 1000; // 5 分钟，热门榜常新
 
-    if (cachedRecommends && now - cachedRecommends.timestamp < CACHE_DURATION) {
-      console.log('使用缓存的短剧推荐数据');
+    const cached = cachedRecommends[mode];
+    if (cached && now - cached.timestamp < CACHE_DURATION) {
+      console.log(`使用缓存的短剧推荐数据 (${mode})`);
       const cacheTime = 300; // 5 分钟，与服务端内存缓存一致
       return NextResponse.json(
         {
           code: 200,
           message: '获取成功',
-          data: cachedRecommends.data,
+          data: cached.data,
         },
         {
           headers: {
@@ -89,59 +93,77 @@ export async function GET() {
       });
     }
 
-    // 取第一个视频源
-    const firstSource = sources[0];
-    console.log(`使用视频源: ${firstSource.name}`);
-
-    // 获取该视频源的分类列表，找到短剧分类的ID
-    const classUrl = `${firstSource.api}?ac=list`;
-    const classResponse = await fetch(classUrl, {
-      headers: API_CONFIG.search.headers,
-    });
-
-    if (!classResponse.ok) {
-      throw new Error('获取分类列表失败');
-    }
-
-    const classData = parseJsonLosslessIntegers<CmsClassResponse>(
-      await classResponse.text()
-    );
-
-    // 找到短剧分类的ID
-    let duanjuClass: CmsClassItem | null = null;
-    if (classData.class && Array.isArray(classData.class)) {
-      duanjuClass = classData.class.find((item) => {
-        const typeName = item.type_name?.toLowerCase() || '';
-        return (
-          typeName.includes('短剧') ||
-          typeName.includes('短视频') ||
-          typeName.includes('微短剧')
-        );
-      }) || null;
-    }
-
-    if (!duanjuClass) {
-      return NextResponse.json({
-        code: 200,
-        message: '未找到短剧分类',
-        data: [],
+    // 目标源与目标分类：AI 模式用第一个有 AI 分类的源；
+    // 真人模式用第一个源的短剧分类（含其子分类兜底）
+    let targetSource = sources[0];
+    let typeIds: Array<string | number> = [];
+    if (mode === 'ai') {
+      const aiSource = sources.find((s) => s.aiTypeId);
+      if (!aiSource?.aiTypeId) {
+        return NextResponse.json({
+          code: 200,
+          message: '暂无 AI 短剧视频源',
+          data: [],
+        });
+      }
+      targetSource = aiSource;
+      typeIds = [aiSource.aiTypeId];
+      console.log(
+        `使用视频源: ${targetSource.name}，AI 分类ID: ${aiSource.aiTypeId}`
+      );
+    } else {
+      // 获取第一个视频源的分类列表，找到短剧分类的ID
+      const classUrl = `${targetSource.api}?ac=list`;
+      const classResponse = await fetch(classUrl, {
+        headers: API_CONFIG.search.headers,
       });
+
+      if (!classResponse.ok) {
+        throw new Error('获取分类列表失败');
+      }
+
+      const classData = parseJsonLosslessIntegers<CmsClassResponse>(
+        await classResponse.text()
+      );
+
+      // 找到短剧分类的ID
+      let duanjuClass: CmsClassItem | null = null;
+      if (classData.class && Array.isArray(classData.class)) {
+        duanjuClass = classData.class.find((item) => {
+          const typeName = item.type_name?.toLowerCase() || '';
+          return (
+            typeName.includes('短剧') ||
+            typeName.includes('短视频') ||
+            typeName.includes('微短剧')
+          );
+        }) || null;
+      }
+
+      if (!duanjuClass) {
+        return NextResponse.json({
+          code: 200,
+          message: '未找到短剧分类',
+          data: [],
+        });
+      }
+
+      const duanjuTypeId = duanjuClass.type_id;
+      console.log(`使用视频源: ${targetSource.name}，短剧分类ID: ${duanjuTypeId}`);
+
+      // 短剧分类下的直接子分类；带二级分类的源通常把内容挂在二级分类下，
+      // 一级分类为空时依次尝试子分类，取第一个有内容的
+      const childTypeIds = (classData.class || [])
+        .filter(
+          (item) => (item.type_pid ?? 0).toString() === duanjuTypeId.toString()
+        )
+        .map((item) => item.type_id);
+
+      typeIds = [duanjuClass.type_id, ...childTypeIds];
     }
-
-    const duanjuTypeId = duanjuClass.type_id;
-    console.log(`短剧分类ID: ${duanjuTypeId}`);
-
-    // 短剧分类下的直接子分类；带二级分类的源通常把内容挂在二级分类下，
-    // 一级分类为空时依次尝试子分类，取第一个有内容的
-    const childTypeIds = (classData.class || [])
-      .filter(
-        (item) => (item.type_pid ?? 0).toString() === duanjuTypeId.toString()
-      )
-      .map((item) => item.type_id);
 
     let videoList: ApiSearchItem[] | null = null;
-    for (const typeId of [duanjuClass.type_id, ...childTypeIds]) {
-      const list = await fetchVideoList(firstSource.api, typeId);
+    for (const typeId of typeIds) {
+      const list = await fetchVideoList(targetSource.api, typeId);
       if (list && list.length > 0) {
         videoList = list;
         break;
@@ -193,8 +215,8 @@ export async function GET() {
         poster: item.vod_pic,
         episodes,
         episodes_titles: titles,
-        source: firstSource.key,
-        source_name: firstSource.name,
+        source: targetSource.key,
+        source_name: targetSource.name,
         class: item.vod_class,
         year: item.vod_year ? item.vod_year.match(/\d{4}/)?.[0] || '' : 'unknown',
         desc: cleanHtmlTags(item.vod_content || ''),
@@ -210,8 +232,8 @@ export async function GET() {
 
     console.log(`返回 ${filteredVideos.length} 个短剧视频`);
 
-    // 保存到内存缓存
-    cachedRecommends = {
+    // 保存到内存缓存（按类型分开）
+    cachedRecommends[mode] = {
       timestamp: Date.now(),
       data: filteredVideos,
     };
