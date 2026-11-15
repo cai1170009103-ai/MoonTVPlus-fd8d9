@@ -2,7 +2,7 @@
 
 'use client';
 
-import { Blend, Cat, Clover, Container, Film, Flame, Globe, Home, Star, Tv, TvMinimalPlay, Users } from 'lucide-react';
+import { Blend, Cat, Clover, Container, Film, Flame, Globe, Home, Smartphone, Star, TvMinimalPlay, Users } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -46,9 +46,9 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
       href: '/douban?type=movie',
     },
     {
-      icon: Tv,
-      label: '剧集',
-      href: '/douban?type=tv',
+      icon: Smartphone,
+      label: '短剧',
+      href: '/duanju',
     },
     {
       icon: Cat,
@@ -88,9 +88,9 @@ const MobileBottomNav = ({ activePath }: MobileBottomNavProps) => {
         href: '/douban?type=movie',
       },
       {
-        icon: Tv,
-        label: '剧集',
-        href: '/douban?type=tv',
+        icon: Smartphone,
+        label: '短剧',
+        href: '/duanju',
       },
       {
         icon: Cat,

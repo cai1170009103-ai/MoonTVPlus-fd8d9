@@ -400,12 +400,12 @@ function HomeClient() {
   useEffect(() => {
     const CACHE_DURATION = 60 * 60 * 1000; // 1小时
 
-    const getCache = (key: string) => {
+    const getCache = (key: string, duration = CACHE_DURATION) => {
       try {
         const cached = localStorage.getItem(key);
         if (!cached) return null;
         const { data, timestamp } = JSON.parse(cached);
-        return { data, expired: Date.now() - timestamp > CACHE_DURATION };
+        return { data, expired: Date.now() - timestamp > duration };
       } catch {
         return null;
       }
@@ -426,7 +426,7 @@ function HomeClient() {
     const tvShowsCache = getCache('homepage_tvshows');
     const varietyCache = getCache('homepage_variety');
     const bangumiCache = getCache('homepage_bangumi');
-    const duanjuCache = getCache('homepage_duanju');
+    const duanjuCache = getCache('homepage_duanju', 5 * 60 * 1000); // 短剧热门 5 分钟一刷
     const upcomingCache = getCache('homepage_upcoming');
 
     if (moviesCache?.data) setHotMovies(moviesCache.data);

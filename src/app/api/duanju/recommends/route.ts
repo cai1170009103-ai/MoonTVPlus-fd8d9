@@ -2,7 +2,7 @@
 
 import { NextResponse } from 'next/server';
 
-import { API_CONFIG, getCacheTime } from '@/lib/config';
+import { API_CONFIG } from '@/lib/config';
 import { getDuanjuSources } from '@/lib/duanju';
 import { parseJsonLosslessIntegers } from '@/lib/json';
 import { SearchResult } from '@/lib/types';
@@ -59,11 +59,11 @@ export async function GET() {
   try {
     // 检查内存缓存
     const now = Date.now();
-    const CACHE_DURATION = 60 * 60 * 1000; // 1小时
+    const CACHE_DURATION = 5 * 60 * 1000; // 5 分钟，热门榜常新
 
     if (cachedRecommends && now - cachedRecommends.timestamp < CACHE_DURATION) {
       console.log('使用缓存的短剧推荐数据');
-      const cacheTime = await getCacheTime();
+      const cacheTime = 300; // 5 分钟，与服务端内存缓存一致
       return NextResponse.json(
         {
           code: 200,
@@ -216,7 +216,7 @@ export async function GET() {
       data: filteredVideos,
     };
 
-    const cacheTime = await getCacheTime();
+    const cacheTime = 300; // 5 分钟，与服务端内存缓存一致
     return NextResponse.json(
       {
         code: 200,

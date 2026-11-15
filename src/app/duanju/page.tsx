@@ -91,6 +91,8 @@ function DuanjuPageClient() {
   const [selectedParentCategory, setSelectedParentCategory] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [videos, setVideos] = useState<SearchResult[]>([]);
+  const [hotDuanju, setHotDuanju] = useState<SearchResult[]>([]);
+  const [isLoadingHot, setIsLoadingHot] = useState(false);
   const [isLoadingSources, setIsLoadingSources] = useState(true);
   const [isLoadingVideos, setIsLoadingVideos] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -215,6 +217,25 @@ function DuanjuPageClient() {
 
     fetchSources();
   }, [restoreChecked]);
+
+  // 热门短剧：每次进页都重新拉取（服务端缓存 5 分钟），保证榜单常新
+  useEffect(() => {
+    const fetchHot = async () => {
+      setIsLoadingHot(true);
+      try {
+        const response = await fetch('/api/duanju/recommends');
+        const data = await response.json();
+        if (data.code === 200 && Array.isArray(data.data)) {
+          setHotDuanju(data.data as SearchResult[]);
+        }
+      } catch (error) {
+        console.error('Failed to load hot duanju:', error);
+      } finally {
+        setIsLoadingHot(false);
+      }
+    };
+    fetchHot();
+  }, []);
 
   const handleSourceChange = (sourceKey: string) => {
     const source = sources.find((item) => item.key === sourceKey);
@@ -440,6 +461,56 @@ function DuanjuPageClient() {
             返回首页
           </Link>
         </div>
+
+        {/* 热门短剧：每次进页重新拉取，横向滑动，点进直接竖屏播放 */}
+        {(isLoadingHot || hotDuanju.length > 0) && (
+          <div className='max-w-[95%] mx-auto mb-8'>
+            <div className='mb-3 flex items-center gap-2'>
+              <h2 className='text-xl font-bold text-gray-800 dark:text-gray-200'>
+                🔥 热门短剧
+              </h2>
+              <span className='text-xs text-gray-500 dark:text-gray-400'>
+                实时更新
+              </span>
+            </div>
+            {isLoadingHot && hotDuanju.length === 0 ? (
+              <div className='flex justify-center items-center h-32'>
+                <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500'></div>
+              </div>
+            ) : (
+              <div className='overflow-x-auto scrollbar-hide'>
+                <div className='flex gap-3 px-1 min-w-min'>
+                  {hotDuanju.map((item) => (
+                    <div
+                      key={`hot-${item.source}-${item.id}`}
+                      className='w-36 sm:w-44 flex-shrink-0'
+                    >
+                      <VideoCard
+                        id={item.id}
+                        title={item.title}
+                        poster={item.poster}
+                        episodes={item.episodes.length}
+                        source={item.source}
+                        source_name={item.source_name}
+                        douban_id={item.douban_id}
+                        year={item.year}
+                        from='source-search'
+                        type='tv'
+                        isDuanju
+                        cmsData={{
+                          desc: item.desc,
+                          episodes: item.episodes,
+                          episodes_titles: item.episodes_titles,
+                        }}
+                        onBeforeNavigate={saveSnapshot}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className='max-w-4xl mx-auto mb-8'>
           <div className='relative'>
