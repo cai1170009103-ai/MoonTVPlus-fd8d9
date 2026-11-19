@@ -142,6 +142,26 @@ export async function GET(request: NextRequest) {
       // 8 秒全局截止：到时还没回的慢源直接丢弃，不等它们
       deadlineTimer = setTimeout(() => finishStream(true), 8000);
 
+      // 2.5 秒早收：已经有结果、且至少 2 个源回来了，就直接收尾，
+      // 不用等剩下那 8、9 个慢源。没结果的冷门词不走这条，继续等到 8 秒。
+      const searchStartTime = Date.now();
+      earlyFinishInterval = setInterval(() => {
+        if (streamClosed) {
+          if (earlyFinishInterval) {
+            clearInterval(earlyFinishInterval);
+            earlyFinishInterval = null;
+          }
+          return;
+        }
+        if (
+          Date.now() - searchStartTime >= 2500 &&
+          allResults.length > 0 &&
+          completedSources >= 2
+        ) {
+          finishStream(true);
+        }
+      }, 500);
+
       // 记录已完成的源数量
       let completedSources = 0;
       const allResults: any[] = [];
@@ -149,11 +169,16 @@ export async function GET(request: NextRequest) {
       // 全局截止：8 秒后无论剩几个源没回，都发 complete 收尾，避免慢源
       // 把整个搜索拖到 20 秒以上。前端收到 complete 即停掉转圈。
       let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+      let earlyFinishInterval: ReturnType<typeof setInterval> | null = null;
       const finishStream = (truncated: boolean) => {
         if (streamClosed) return;
         if (deadlineTimer) {
           clearTimeout(deadlineTimer);
           deadlineTimer = null;
+        }
+        if (earlyFinishInterval) {
+          clearInterval(earlyFinishInterval);
+          earlyFinishInterval = null;
         }
         const completeEvent = `data: ${JSON.stringify({
           type: 'complete',
