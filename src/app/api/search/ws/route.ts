@@ -139,16 +139,28 @@ export async function GET(request: NextRequest) {
         return; // 连接已关闭，提前退出
       }
 
+      // 8 秒全局截止：到时还没回的慢源直接丢弃，不等它们
+      deadlineTimer = setTimeout(() => finishStream(true), 8000);
+
       // 记录已完成的源数量
       let completedSources = 0;
       const allResults: any[] = [];
 
-      const maybeComplete = () => {
-        if (completedSources !== totalSourceCount || streamClosed) return;
+      // 全局截止：8 秒后无论剩几个源没回，都发 complete 收尾，避免慢源
+      // 把整个搜索拖到 20 秒以上。前端收到 complete 即停掉转圈。
+      let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+      const finishStream = (truncated: boolean) => {
+        if (streamClosed) return;
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer);
+          deadlineTimer = null;
+        }
         const completeEvent = `data: ${JSON.stringify({
           type: 'complete',
           totalResults: allResults.length,
           completedSources,
+          truncated,
+          skippedSources: Math.max(0, totalSourceCount - completedSources),
           timestamp: Date.now()
         })}\n\n`;
 
@@ -160,6 +172,11 @@ export async function GET(request: NextRequest) {
             console.warn('Failed to close controller:', error);
           }
         }
+      };
+
+      const maybeComplete = () => {
+        if (completedSources !== totalSourceCount || streamClosed) return;
+        finishStream(false);
       };
 
       if (totalSourceCount === 0) {
@@ -182,13 +199,19 @@ export async function GET(request: NextRequest) {
             // 为每个 Emby 源并发搜索，并单独发送结果
             const embySearchPromises = embySources.map(async ({ client, config: embyConfig }) => {
               try {
-                const searchResult = await client.getItems({
-                  searchTerm: query,
-                  IncludeItemTypes: 'Movie,Series',
-                  Recursive: true,
-                  Fields: 'Overview,ProductionYear',
-                  Limit: 50,
-                });
+                // Emby 原来没有超时保护，挂住会拖住整次搜索：5 秒没回就丢
+                const searchResult = await Promise.race([
+                  client.getItems({
+                    searchTerm: query,
+                    IncludeItemTypes: 'Movie,Series',
+                    Recursive: true,
+                    Fields: 'Overview,ProductionYear',
+                    Limit: 50,
+                  }),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error(`${embyConfig.name} timeout`)), 5000)
+                  ),
+                ]);
 
                 const sourceValue = embySources.length === 1 ? 'emby' : `emby_${embyConfig.key}`;
                 const sourceName = embySources.length === 1 ? 'Emby' : embyConfig.name;
@@ -327,7 +350,7 @@ export async function GET(request: NextRequest) {
             }
           })(),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('OpenList timeout')), 20000)
+            setTimeout(() => reject(new Error('OpenList timeout')), 5000)
           ),
         ])
           .then((openlistResults: any) => {
@@ -376,7 +399,7 @@ export async function GET(request: NextRequest) {
           const searchPromise = Promise.race([
             searchFromApi(site, query),
             new Promise((_, reject) =>
-              setTimeout(() => reject(new Error(`${site.name} timeout`)), 20000)
+              setTimeout(() => reject(new Error(`${site.name} timeout`)), 5000)
             ),
           ]);
 
@@ -476,7 +499,7 @@ export async function GET(request: NextRequest) {
               payload: {},
             }),
             new Promise((_, reject) =>
-              setTimeout(() => reject(new Error(`${script.name} timeout`)), 20000)
+              setTimeout(() => reject(new Error(`${script.name} timeout`)), 5000)
             ),
           ]);
 
@@ -494,7 +517,7 @@ export async function GET(request: NextRequest) {
                   },
                 }),
                 new Promise((_, reject) =>
-                  setTimeout(() => reject(new Error(`${script.name}/${source.name} timeout`)), 20000)
+                  setTimeout(() => reject(new Error(`${script.name}/${source.name} timeout`)), 5000)
                 ),
               ]);
 
