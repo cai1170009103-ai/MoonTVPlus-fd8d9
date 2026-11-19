@@ -6,6 +6,7 @@ import { getAuthInfoFromCookie } from '@/lib/auth';
 import { getAvailableApiSites, getConfig } from '@/lib/config';
 import { searchFromApi } from '@/lib/downstream';
 import { hasFeaturePermission } from '@/lib/permissions';
+import { getSearchDbCache, setSearchDbCache } from '@/lib/search-db-cache';
 import { yellowWords } from '@/lib/yellow';
 import { canViewAdult } from '@/lib/adult-access';
 import { getProxyToken } from '@/lib/emby-token';
@@ -88,6 +89,18 @@ export async function GET(request: NextRequest) {
   );
   const enabledScripts = privateOnly ? [] : await listEnabledSourceScripts();
 
+  // 共享缓存：搜过的词先读库。只用于普通搜索，特殊源/私人影库不走缓存。
+  // 在流开始前读好，这样首屏就能直接发缓存结果，不用等网络。
+  const dbCachedSources = new Map<string, { sourceName: string; results: any[] }>();
+  if (!specialOnly && !privateOnly) {
+    const dbCache = await getSearchDbCache(query);
+    if (dbCache) {
+      for (const s of dbCache.sources) {
+        dbCachedSources.set(s.source, { sourceName: s.sourceName, results: s.results });
+      }
+    }
+  }
+
   // 共享状态
   let streamClosed = false;
 
@@ -142,7 +155,7 @@ export async function GET(request: NextRequest) {
       // 8 秒全局截止：到时还没回的慢源直接丢弃，不等它们
       deadlineTimer = setTimeout(() => finishStream(true), 8000);
 
-      // 2.5 秒早收：已经有结果、且至少 2 个源回来了，就直接收尾，
+      // 2 秒早收：已经有结果、且至少 2 个源回来了，就直接收尾，
       // 不用等剩下那 8、9 个慢源。没结果的冷门词不走这条，继续等到 8 秒。
       const searchStartTime = Date.now();
       earlyFinishInterval = setInterval(() => {
@@ -154,7 +167,7 @@ export async function GET(request: NextRequest) {
           return;
         }
         if (
-          Date.now() - searchStartTime >= 2500 &&
+          Date.now() - searchStartTime >= 2000 &&
           allResults.length > 0 &&
           completedSources >= 2
         ) {
@@ -165,6 +178,8 @@ export async function GET(request: NextRequest) {
       // 记录已完成的源数量
       let completedSources = 0;
       const allResults: any[] = [];
+      // 本次搜到的各源原始结果（没过滤过的），结束时合并写回共享缓存
+      const freshSources = new Map<string, { sourceName: string; results: any[] }>();
 
       // 全局截止：8 秒后无论剩几个源没回，都发 complete 收尾，避免慢源
       // 把整个搜索拖到 20 秒以上。前端收到 complete 即停掉转圈。
@@ -208,6 +223,41 @@ export async function GET(request: NextRequest) {
         maybeComplete();
         return;
       }
+
+      // 缓存里有的源直接发出去，不等网络：重复搜秒出结果
+      for (const site of sortedApiSites) {
+        const cached = dbCachedSources.get(site.key);
+        if (!cached) continue;
+        let cachedResults = cached.results;
+        if (!config.SiteConfig.DisableYellowFilter || !adultAllowed) {
+          cachedResults = cachedResults.filter((result) => {
+            const typeName = result.type_name || '';
+            return !yellowWords.some((word: string) => typeName.includes(word));
+          });
+        }
+        cachedResults = cachedResults.map((result) => ({
+          ...result,
+          weight: result.weight ?? (weightMap.get(result.source) ?? 0),
+        }));
+        completedSources++;
+        // 原始结果留着，结束时合并写回共享缓存
+        freshSources.set(site.key, { sourceName: site.name, results: cached.results });
+        if (!streamClosed) {
+          const sourceEvent = `data: ${JSON.stringify({
+            type: 'source_result',
+            source: site.key,
+            sourceName: site.name,
+            results: cachedResults,
+            timestamp: Date.now()
+          })}\n\n`;
+          safeEnqueue(encoder.encode(sourceEvent));
+        }
+        if (cachedResults.length > 0) {
+          allResults.push(...cachedResults);
+        }
+      }
+      // 全部源都在缓存里时直接收尾，不用再等
+      maybeComplete();
 
       // 搜索 Emby（如果配置了）- 异步带超时，支持多源
       if (hasEmby) {
@@ -419,6 +469,8 @@ export async function GET(request: NextRequest) {
 
       // 为每个源创建搜索 Promise
       const searchPromises = sortedApiSites.map(async (site) => {
+        // 缓存里有的源前面已经发过了，不再查网络
+        if (dbCachedSources.has(site.key)) return;
         try {
           // 添加超时控制
           const searchPromise = Promise.race([
@@ -446,6 +498,11 @@ export async function GET(request: NextRequest) {
             ...result,
             weight: result.weight ?? (weightMap.get(result.source) ?? 0),
           }));
+
+          // 记下没过滤过的原始结果，结束时写回共享缓存（空结果不记）
+          if (safeResults.length > 0) {
+            freshSources.set(site.key, { sourceName: site.name, results: safeResults });
+          }
 
           // 发送该源的搜索结果
           completedSources++;
@@ -628,6 +685,19 @@ export async function GET(request: NextRequest) {
 
       // 等待所有搜索完成
       await Promise.allSettled([...searchPromises, ...scriptPromises]);
+
+      // 写回共享缓存：这次查到的 + 之前缓存的合并，下次搜直接读库。
+      // 流可能早就提前收尾了，但这里是后台继续跑完才写，所以下次搜更全。
+      if (!specialOnly && !privateOnly && freshSources.size > 0) {
+        await setSearchDbCache(
+          query,
+          Array.from(freshSources.entries()).map(([source, v]) => ({
+            source,
+            sourceName: v.sourceName,
+            results: v.results,
+          }))
+        );
+      }
     },
 
     cancel() {
